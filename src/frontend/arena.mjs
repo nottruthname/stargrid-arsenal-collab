@@ -21,18 +21,20 @@ function loadImage(src) {
   return img;
 }
 
+const PRELOADED_ASSETS = {
+  bg: loadImage('./src/frontend/assets/bg-hangar.jpg'),
+  hero: loadImage('./src/frontend/assets/hero-mech.png'),
+  enemy: loadImage('./src/frontend/assets/enemy-raider.png'),
+  boss: loadImage('./src/frontend/assets/boss-overlord.png'),
+};
+
 export class BattleArena {
   constructor(canvas, callbacks = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.callbacks = callbacks;
 
-    this.assets = {
-      bg: loadImage('./src/frontend/assets/bg-hangar.jpg'),
-      hero: loadImage('./src/frontend/assets/hero-mech.png'),
-      enemy: loadImage('./src/frontend/assets/enemy-raider.png'),
-      boss: loadImage('./src/frontend/assets/boss-overlord.png'),
-    };
+    this.assets = PRELOADED_ASSETS;
 
     // 离屏画布用于实现像素级纯白受击闪烁剪影
     this.flashCanvas = document.createElement('canvas');
@@ -212,8 +214,8 @@ export class BattleArena {
     const w = this.canvas.width;
     const h = this.canvas.height;
     const isExpanded = this.mode === 'playing' || h > 165;
-    const floorY = h * (isExpanded ? 0.85 : 0.86);
-    const spriteSize = isExpanded ? 112 : 66;
+    const floorY = h * (isExpanded ? 0.85 : 0.89);
+    const spriteSize = isExpanded ? 114 : 54;
     return {
       w,
       h,
@@ -835,8 +837,8 @@ export class BattleArena {
     }
 
     // 双方游戏风格血条
-    this.drawGameHpBar(10, 18, 128, this.playerHp, this.playerTrailHp, this.playerMaxHp, this.playerShield, '#22c55e');
-    this.drawGameHpBar(w - 138, 18, 128, this.enemyHp, this.enemyTrailHp, this.enemyMaxHp, this.enemyShield, waveCfg.accentColor);
+    this.drawGameHpBar(10, 15, 128, this.playerHp, this.playerTrailHp, this.playerMaxHp, this.playerShield, '#22c55e');
+    this.drawGameHpBar(w - 138, 15, 128, this.enemyHp, this.enemyTrailHp, this.enemyMaxHp, this.enemyShield, waveCfg.accentColor);
 
     // 双方底部名字牌
     ctx.font = '800 10.5px "Space Grotesk", "Noto Sans SC", system-ui, sans-serif';

@@ -555,10 +555,12 @@ function bootPlayableGame() {
         const hull = document.createElement('div');
         hull.className = 'grid-piece-hull';
         hull.style.borderRadius = `${rTL} ${rTR} ${rBR} ${rBL}`;
-        hull.style.borderTop = hasUp ? 'none' : `2px solid ${pal.border}`;
-        hull.style.borderBottom = hasDown ? 'none' : `3px solid ${pal.lip}`;
-        hull.style.borderLeft = hasLeft ? 'none' : `2px solid ${pal.border}`;
-        hull.style.borderRight = hasRight ? 'none' : `2px solid ${pal.border}`;
+        const borderCol = isSelected ? '#ffffff' : pal.border;
+        const lipCol = isSelected ? '#e0f2fe' : pal.lip;
+        hull.style.borderTop = hasUp ? 'none' : `2px solid ${borderCol}`;
+        hull.style.borderBottom = hasDown ? 'none' : `3px solid ${lipCol}`;
+        hull.style.borderLeft = hasLeft ? 'none' : `2px solid ${borderCol}`;
+        hull.style.borderRight = hasRight ? 'none' : `2px solid ${borderCol}`;
 
         cellTile.appendChild(hull);
         cellTile.addEventListener('pointerdown', (e) => {

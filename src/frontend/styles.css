@@ -543,8 +543,11 @@ body {
 }
 
 .grid-piece-cell.selected .grid-piece-hull {
-  filter: brightness(1.18);
-  box-shadow: inset 0 0 0 2px #ffffff, 0 0 14px var(--item-color, #38bdf8);
+  filter: brightness(1.22);
+}
+
+.grid-piece-cell.selected {
+  filter: drop-shadow(0 0 8px var(--item-color, #38bdf8));
 }
 
 .grid-piece-cell.triggered .grid-piece-hull {

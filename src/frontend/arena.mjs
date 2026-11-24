@@ -1,15 +1,44 @@
 /**
- * 《星匣乱斗：口袋军械库》60fps 战斗舞台画布与回放控制器
+ * 《星匣乱斗：口袋军械库》v2.0 真实精灵骨骼动效 & 机甲剧场渲染引擎
+ * - 真实背景贴图 + 透明抠图机甲精灵（Q版蓝金先锋 / 绯红突袭者 / 深空终焉首领）
+ * - 呼吸动画、开火前冲、受击像素级白闪剪影、延迟扣血残影条、专属武器光束/电弧/斩击
  */
 
 import { ITEM_CATALOG, OVERTIME_START_SEC, WAVE_CONFIGS } from '../../shared/protocol.mjs';
 import { sfx } from './sfx.mjs';
+
+function loadImage(src) {
+  const img = new Image();
+  img.loaded = false;
+  img.failed = false;
+  img.onload = () => {
+    img.loaded = true;
+  };
+  img.onerror = () => {
+    img.failed = true;
+  };
+  img.src = src;
+  return img;
+}
 
 export class BattleArena {
   constructor(canvas, callbacks = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.callbacks = callbacks;
+
+    this.assets = {
+      bg: loadImage('./src/frontend/assets/bg-hangar.jpg'),
+      hero: loadImage('./src/frontend/assets/hero-mech.png'),
+      enemy: loadImage('./src/frontend/assets/enemy-raider.png'),
+      boss: loadImage('./src/frontend/assets/boss-overlord.png'),
+    };
+
+    // 离屏画布用于实现像素级纯白受击闪烁剪影
+    this.flashCanvas = document.createElement('canvas');
+    this.flashCanvas.width = 256;
+    this.flashCanvas.height = 256;
+    this.flashCtx = this.flashCanvas.getContext('2d');
 
     this.mode = 'preview'; // 'preview' | 'playing' | 'done'
     this.speed = 1;
@@ -22,9 +51,12 @@ export class BattleArena {
     this.rafId = null;
 
     this.playerHp = 100;
+    this.playerTrailHp = 100;
     this.playerMaxHp = 100;
     this.playerShield = 0;
+
     this.enemyHp = 65;
+    this.enemyTrailHp = 65;
     this.enemyMaxHp = 65;
     this.enemyShield = 0;
     this.enemyBurn = 0;
@@ -32,12 +64,28 @@ export class BattleArena {
     this.enemyChill = 0;
 
     this.projectiles = [];
+    this.beams = [];
+    this.bolts = [];
+    this.particles = [];
     this.floatingTexts = [];
     this.rings = [];
+    this.muzzleFlashes = [];
+    this.ambientMotes = Array.from({ length: 14 }, (_, i) => ({
+      x: ((i * 73) % 100) / 100,
+      y: ((i * 41) % 100) / 100,
+      r: 1 + (i % 2),
+      spd: 0.04 + (i % 4) * 0.02,
+      phase: i * 0.8,
+    }));
+
     this.shakeTime = 0;
     this.shakeAmp = 0;
     this.playerHitFlash = 0;
     this.enemyHitFlash = 0;
+    this.playerAttackKick = 0;
+    this.enemyAttackKick = 0;
+    this.playerKnockback = 0;
+    this.enemyKnockback = 0;
     this.idlePhase = 0;
   }
 
@@ -68,16 +116,16 @@ export class BattleArena {
     const waveCfg = WAVE_CONFIGS[(state.wave || 1) - 1] || WAVE_CONFIGS[0];
     this.playerMaxHp = state.playerMaxHp || 100;
     this.playerHp = this.playerMaxHp;
+    this.playerTrailHp = this.playerMaxHp;
     this.playerShield = (state.relics || []).includes('titanium_hull') ? 25 : 0;
     this.enemyMaxHp = waveCfg.maxHp;
     this.enemyHp = waveCfg.maxHp;
+    this.enemyTrailHp = waveCfg.maxHp;
     this.enemyShield = waveCfg.initialShield;
     this.enemyBurn = 0;
     this.enemyShock = 0;
     this.enemyChill = 0;
-    this.projectiles = [];
-    this.floatingTexts = [];
-    this.rings = [];
+    this.clearFx();
   }
 
   playReport(report) {
@@ -87,16 +135,32 @@ export class BattleArena {
     this.eventCursor = 0;
     this.playerMaxHp = report.playerStartHp;
     this.playerHp = report.playerStartHp;
+    this.playerTrailHp = report.playerStartHp;
     this.playerShield = report.playerStartShield;
     this.enemyMaxHp = report.enemy.maxHp;
     this.enemyHp = report.enemy.maxHp;
+    this.enemyTrailHp = report.enemy.maxHp;
     this.enemyShield = report.enemy.initialShield;
     this.enemyBurn = 0;
     this.enemyShock = 0;
     this.enemyChill = 0;
+    this.clearFx();
+  }
+
+  clearFx() {
     this.projectiles = [];
+    this.beams = [];
+    this.bolts = [];
+    this.particles = [];
     this.floatingTexts = [];
     this.rings = [];
+    this.muzzleFlashes = [];
+    this.playerHitFlash = 0;
+    this.enemyHitFlash = 0;
+    this.playerAttackKick = 0;
+    this.enemyAttackKick = 0;
+    this.playerKnockback = 0;
+    this.enemyKnockback = 0;
   }
 
   setSpeed(speed) {
@@ -127,6 +191,42 @@ export class BattleArena {
     }
   }
 
+  spawnSparks(x, y, color, count = 12) {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 45 + Math.random() * 140;
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - 30,
+        r: 2 + Math.random() * 2.5,
+        color,
+        life: 0.28 + Math.random() * 0.25,
+        maxLife: 0.5,
+      });
+    }
+  }
+
+  getStageAnchors() {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const isExpanded = this.mode === 'playing' || h > 165;
+    const floorY = h * (isExpanded ? 0.85 : 0.86);
+    const spriteSize = isExpanded ? 112 : 66;
+    return {
+      w,
+      h,
+      isExpanded,
+      floorY,
+      spriteSize,
+      pX: w * 0.23,
+      pY: floorY - spriteSize * 0.48,
+      eX: w * 0.77,
+      eY: floorY - spriteSize * 0.48,
+    };
+  }
+
   consumeEvent(ev, silent = false) {
     this.playerHp = ev.playerHp;
     this.playerShield = ev.playerShield;
@@ -138,138 +238,208 @@ export class BattleArena {
 
     if (silent) return;
 
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const pX = w * 0.22;
-    const pY = h * 0.56;
-    const eX = w * 0.78;
-    const eY = h * 0.52;
+    const { w, h, pX, pY, eX, eY, spriteSize } = this.getStageAnchors();
+    const muzzleX = pX + spriteSize * 0.35;
+    const muzzleY = pY - spriteSize * 0.08;
+    const targetX = eX - spriteSize * 0.2;
+    const targetY = eY - spriteSize * 0.04;
 
     if (ev.type === 'weapon_hit') {
       const def = ITEM_CATALOG[ev.itemId];
       const color = def?.color || '#38bdf8';
-      this.projectiles.push({
-        x: pX + 18,
-        y: pY - 4,
-        tx: eX - 18,
-        ty: eY,
-        progress: 0,
-        color,
-        isCrit: ev.isCrit,
-      });
-      this.enemyHitFlash = 0.16;
-      if (ev.isCrit) {
-        this.shakeTime = 0.18;
-        this.shakeAmp = 5;
+      this.playerAttackKick = 1.0;
+      this.muzzleFlashes.push({ x: muzzleX, y: muzzleY, color, life: 0.14, maxLife: 0.14, r: 18 });
+
+      if (ev.itemId === 'rail_rifle') {
+        this.beams.push({
+          x1: muzzleX,
+          y1: muzzleY,
+          x2: targetX,
+          y2: targetY,
+          color: '#a5b4fc',
+          life: 0.28,
+          maxLife: 0.28,
+          width: ev.isCrit ? 11 : 7,
+        });
+        this.rings.push({ x: targetX, y: targetY, r: 8, maxR: 48, color: '#818cf8', life: 0.32, maxLife: 0.32 });
+        this.spawnSparks(targetX, targetY, '#c7d2fe', ev.isCrit ? 22 : 14);
+      } else if (ev.itemId === 'arc_launcher') {
+        const pts = [[muzzleX, muzzleY]];
+        const segs = 5;
+        for (let i = 1; i < segs; i++) {
+          const frac = i / segs;
+          pts.push([
+            muzzleX + (targetX - muzzleX) * frac,
+            muzzleY + (targetY - muzzleY) * frac + (Math.random() - 0.5) * 32,
+          ]);
+        }
+        pts.push([targetX, targetY]);
+        this.bolts.push({ pts, color: '#e879f9', life: 0.26, maxLife: 0.26 });
+        this.spawnSparks(targetX, targetY, '#f0abfc', 14);
+      } else {
+        this.projectiles.push({
+          x: muzzleX,
+          y: muzzleY,
+          tx: targetX,
+          ty: targetY,
+          progress: 0,
+          color,
+          isCrit: ev.isCrit,
+          kind: 'slash',
+        });
+        this.spawnSparks(targetX, targetY, color, ev.isCrit ? 18 : 10);
       }
+
+      this.enemyHitFlash = 0.18;
+      this.enemyKnockback = ev.isCrit ? 10 : 5;
+      if (ev.isCrit) {
+        this.shakeTime = 0.2;
+        this.shakeAmp = 5.5;
+      }
+
       this.floatingTexts.push({
-        x: eX + (Math.random() * 24 - 12),
-        y: eY - 26,
-        text: ev.isCrit ? `💥 -${ev.damage}` : `-${ev.damage}`,
-        color: ev.isCrit ? '#fde047' : '#f8fafc',
-        vy: -36,
-        life: 0.75,
-        maxLife: 0.75,
-        scale: ev.isCrit ? 1.25 : 1,
+        x: eX + (Math.random() * 28 - 14),
+        y: eY - spriteSize * 0.45,
+        text: ev.isCrit ? `💥${ev.damage}!` : `-${ev.damage}`,
+        color: ev.isCrit ? '#fde047' : '#ffffff',
+        vy: -42,
+        life: 0.85,
+        maxLife: 0.85,
+        scale: ev.isCrit ? 1.35 : 1.05,
       });
+
       if (ev.vampHealed > 0) {
         this.floatingTexts.push({
           x: pX,
-          y: pY - 24,
+          y: pY - spriteSize * 0.42,
           text: `+${ev.vampHealed}`,
           color: '#4ade80',
-          vy: -28,
-          life: 0.65,
-          maxLife: 0.65,
-          scale: 0.9,
+          vy: -32,
+          life: 0.7,
+          maxLife: 0.7,
+          scale: 0.95,
         });
       }
       sfx.playHit(ev.isCrit);
       this.callbacks.onItemTrigger?.(ev.instanceId, color);
     } else if (ev.type === 'shield_gain') {
-      this.rings.push({ x: pX, y: pY, r: 16, maxR: 46, color: '#fbbf24', life: 0.45, maxLife: 0.45 });
+      this.rings.push({
+        x: pX,
+        y: pY,
+        r: 18,
+        maxR: spriteSize * 0.65,
+        color: '#fbbf24',
+        life: 0.45,
+        maxLife: 0.45,
+      });
       this.floatingTexts.push({
-        x: pX + (Math.random() * 16 - 8),
-        y: pY - 24,
+        x: pX + (Math.random() * 18 - 9),
+        y: pY - spriteSize * 0.45,
         text: `🛡 +${ev.shieldGained}`,
-        color: '#fcd34d',
-        vy: -30,
-        life: 0.7,
-        maxLife: 0.7,
-        scale: 0.95,
+        color: '#fde047',
+        vy: -34,
+        life: 0.75,
+        maxLife: 0.75,
+        scale: 1.0,
       });
       sfx.playShield();
       this.callbacks.onItemTrigger?.(ev.instanceId, '#fbbf24');
     } else if (ev.type === 'gadget_heal') {
-      this.rings.push({ x: pX, y: pY, r: 12, maxR: 42, color: '#4ade80', life: 0.45, maxLife: 0.45 });
+      this.rings.push({
+        x: pX,
+        y: pY,
+        r: 14,
+        maxR: spriteSize * 0.58,
+        color: '#4ade80',
+        life: 0.45,
+        maxLife: 0.45,
+      });
       const label = ev.healed > 0 ? `+${ev.healed} HP` : `🛡 +${ev.shieldGained}`;
       this.floatingTexts.push({
         x: pX,
-        y: pY - 24,
+        y: pY - spriteSize * 0.45,
         text: label,
         color: '#4ade80',
+        vy: -34,
+        life: 0.75,
+        maxLife: 0.75,
+        scale: 1.0,
+      });
+      sfx.playHeal();
+      this.callbacks.onItemTrigger?.(ev.instanceId, '#4ade80');
+    } else if (ev.type === 'burn_tick') {
+      this.spawnSparks(eX, eY, '#fb7185', 8);
+      this.floatingTexts.push({
+        x: eX - 18,
+        y: eY - spriteSize * 0.52,
+        text: `🔥 -${ev.damage}`,
+        color: '#fb7185',
         vy: -30,
         life: 0.7,
         maxLife: 0.7,
         scale: 0.95,
       });
-      sfx.playHeal();
-      this.callbacks.onItemTrigger?.(ev.instanceId, '#4ade80');
-    } else if (ev.type === 'burn_tick') {
-      this.floatingTexts.push({
-        x: eX - 18,
-        y: eY - 34,
-        text: `🔥 -${ev.damage}`,
-        color: '#fb7185',
-        vy: -26,
-        life: 0.65,
-        maxLife: 0.65,
-        scale: 0.92,
-      });
     } else if (ev.type === 'enemy_attack') {
+      this.enemyAttackKick = 1.0;
       this.projectiles.push({
-        x: eX - 18,
-        y: eY,
-        tx: pX + 18,
+        x: eX - spriteSize * 0.35,
+        y: eY - spriteSize * 0.08,
+        tx: pX + spriteSize * 0.2,
         ty: pY,
         progress: 0,
         color: '#f43f5e',
         isCrit: false,
+        kind: 'orb',
       });
-      this.playerHitFlash = 0.16;
-      this.shakeTime = 0.12;
-      this.shakeAmp = 3.5;
+      this.playerHitFlash = 0.18;
+      this.playerKnockback = 7;
+      this.shakeTime = 0.14;
+      this.shakeAmp = 4;
+      this.spawnSparks(pX + 10, pY, '#fb7185', 10);
       this.floatingTexts.push({
-        x: pX + (Math.random() * 16 - 8),
-        y: pY - 28,
+        x: pX + (Math.random() * 18 - 9),
+        y: pY - spriteSize * 0.45,
         text: `-${ev.damage}`,
         color: '#fda4af',
-        vy: -34,
+        vy: -38,
         life: 0.75,
         maxLife: 0.75,
-        scale: 1,
+        scale: 1.05,
       });
     } else if (ev.type === 'overtime_storm') {
-      this.shakeTime = 0.15;
-      this.shakeAmp = 4;
+      this.shakeTime = 0.18;
+      this.shakeAmp = 4.5;
       this.floatingTexts.push({
         x: w * 0.5,
-        y: h * 0.34,
+        y: h * 0.36,
         text: `⚡星渊风暴 -${ev.damage}`,
         color: '#f59e0b',
-        vy: -24,
+        vy: -26,
         life: 0.85,
         maxLife: 0.85,
-        scale: 1,
+        scale: 1.05,
       });
     }
   }
 
   update(dt) {
-    this.idlePhase += dt * 2.4;
+    this.idlePhase += dt * 3.1;
     if (this.shakeTime > 0) this.shakeTime = Math.max(0, this.shakeTime - dt);
     if (this.playerHitFlash > 0) this.playerHitFlash = Math.max(0, this.playerHitFlash - dt);
     if (this.enemyHitFlash > 0) this.enemyHitFlash = Math.max(0, this.enemyHitFlash - dt);
+    if (this.playerAttackKick > 0) this.playerAttackKick = Math.max(0, this.playerAttackKick - dt * 5.5);
+    if (this.enemyAttackKick > 0) this.enemyAttackKick = Math.max(0, this.enemyAttackKick - dt * 5.5);
+    this.playerKnockback *= Math.pow(0.001, dt);
+    this.enemyKnockback *= Math.pow(0.001, dt);
+
+    // 延迟白色掉血残影平滑追赶
+    this.playerTrailHp += (this.playerHp - this.playerTrailHp) * Math.min(1, dt * 6);
+    this.enemyTrailHp += (this.enemyHp - this.enemyTrailHp) * Math.min(1, dt * 6);
+
+    for (const m of this.ambientMotes) {
+      m.y -= m.spd * dt;
+      if (m.y < 0) m.y = 1;
+    }
 
     if (this.mode === 'playing' && this.report) {
       this.simTime += dt * this.speed;
@@ -287,13 +457,38 @@ export class BattleArena {
 
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
-      p.progress += dt * (4.8 * Math.max(1, this.speed * 0.75));
+      p.progress += dt * (5.6 * Math.max(1, this.speed * 0.75));
       if (p.progress >= 1) this.projectiles.splice(i, 1);
+    }
+
+    for (let i = this.beams.length - 1; i >= 0; i--) {
+      this.beams[i].life -= dt;
+      if (this.beams[i].life <= 0) this.beams.splice(i, 1);
+    }
+
+    for (let i = this.bolts.length - 1; i >= 0; i--) {
+      this.bolts[i].life -= dt;
+      if (this.bolts[i].life <= 0) this.bolts.splice(i, 1);
+    }
+
+    for (let i = this.muzzleFlashes.length - 1; i >= 0; i--) {
+      this.muzzleFlashes[i].life -= dt;
+      if (this.muzzleFlashes[i].life <= 0) this.muzzleFlashes.splice(i, 1);
+    }
+
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const pt = this.particles[i];
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.vy += 260 * dt;
+      pt.life -= dt;
+      if (pt.life <= 0) this.particles.splice(i, 1);
     }
 
     for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
       const ft = this.floatingTexts[i];
       ft.y += ft.vy * dt;
+      ft.vy *= 0.94;
       ft.life -= dt;
       if (ft.life <= 0) this.floatingTexts.splice(i, 1);
     }
@@ -306,108 +501,187 @@ export class BattleArena {
     }
   }
 
-  drawHpBar(x, y, width, hp, maxHp, shield, accentColor) {
+  drawHangarBackground(w, h) {
     const ctx = this.ctx;
-    const barH = 10;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-    ctx.beginPath();
-    ctx.roundRect(x, y, width, barH, 5);
-    ctx.fill();
-
-    const pct = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
-    if (pct > 0) {
-      ctx.fillStyle = accentColor;
-      ctx.beginPath();
-      ctx.roundRect(x, y, width * pct, barH, 5);
-      ctx.fill();
+    const bg = this.assets.bg;
+    if (bg.loaded) {
+      const imgAspect = bg.width / bg.height;
+      const canvasAspect = w / h;
+      let sx = 0;
+      let sy = 0;
+      let sw = bg.width;
+      let sh = bg.height;
+      if (canvasAspect > imgAspect) {
+        sh = bg.width / canvasAspect;
+        // 向下取景，确保地面甲板与星云窗同时入画
+        sy = (bg.height - sh) * 0.76;
+      } else {
+        sw = bg.height * canvasAspect;
+        sx = (bg.width - sw) * 0.5;
+      }
+      ctx.drawImage(bg, sx, sy, sw, sh, 0, 0, w, h);
+      // 轻度底部暗化渐变增强角色与血条可读性
+      const shade = ctx.createLinearGradient(0, 0, 0, h);
+      shade.addColorStop(0, 'rgba(5, 8, 20, 0.45)');
+      shade.addColorStop(0.5, 'rgba(5, 8, 20, 0.08)');
+      shade.addColorStop(1, 'rgba(5, 8, 20, 0.55)');
+      ctx.fillStyle = shade;
+      ctx.fillRect(0, 0, w, h);
+    } else {
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, '#0b1630');
+      g.addColorStop(1, '#15223d');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
     }
 
-    if (shield > 0) {
-      const sPct = Math.min(1, shield / Math.max(1, maxHp));
-      ctx.fillStyle = 'rgba(251, 191, 36, 0.85)';
+    // 漂浮星尘粒子
+    for (const m of this.ambientMotes) {
+      const mx = m.x * w + Math.sin(this.idlePhase + m.phase) * 4;
+      const my = m.y * h;
+      ctx.fillStyle = 'rgba(125, 211, 252, 0.35)';
       ctx.beginPath();
-      ctx.roundRect(x, y + barH + 3, width * sPct, 4, 2);
+      ctx.arc(mx, my, m.r, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    ctx.font = '600 11px system-ui, "Noto Sans SC", sans-serif';
-    ctx.fillStyle = '#f8fafc';
-    ctx.textAlign = 'center';
-    const text = shield > 0 ? `${hp}/${maxHp} (+${shield}🛡)` : `${hp}/${maxHp}`;
-    ctx.fillText(text, x + width / 2, y - 5);
   }
 
-  drawMech(cx, cy, isEnemy, waveNum, accentColor, hitFlash, shield) {
+  drawSpriteCharacter({ img, cx, floorY, size, phaseOffset, kick, knockback, isEnemy, hitFlash, shield, auraColor }) {
     const ctx = this.ctx;
-    const bob = Math.sin(this.idlePhase + (isEnemy ? 2 : 0)) * 3;
+    const breath = Math.sin(this.idlePhase + phaseOffset);
+    const scaleY = 1 + breath * 0.035;
+    const scaleX = 1 - breath * 0.02;
+    const lungeDir = isEnemy ? -1 : 1;
+    const offsetX = kick * 14 * lungeDir - knockback * lungeDir;
+    const tilt = kick * 0.08 * lungeDir;
+
+    const drawX = cx + offsetX;
+    const drawY = floorY;
+
+    // 脚底接触阴影
     ctx.save();
-    ctx.translate(cx, cy + bob);
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
+    ctx.beginPath();
+    ctx.ellipse(drawX, floorY + 2, size * 0.36, size * 0.1, 0, 0, Math.PI * 2);
+    ctx.fill();
 
+    // Boss 或精英脚底光环
+    if (auraColor) {
+      ctx.strokeStyle = auraColor;
+      ctx.globalAlpha = 0.45 + Math.sin(this.idlePhase * 1.5) * 0.15;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(drawX, floorY + 1, size * 0.44, size * 0.13, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // 护盾六边形能量罩
     if (shield > 0) {
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.55)';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.72)';
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.09)';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(0, 0, 31, 0, Math.PI * 2);
+      ctx.arc(drawX, drawY - size * 0.48, size * 0.56, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
     }
 
-    if (!isEnemy) {
-      // 玩家星匣先锋核心机甲
-      ctx.fillStyle = hitFlash > 0 ? '#fca5a5' : '#0f172a';
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.roundRect(-22, -22, 44, 44, 11);
-      ctx.fill();
-      ctx.stroke();
+    ctx.translate(drawX, drawY);
+    ctx.rotate(tilt);
+    ctx.scale(scaleX, scaleY);
 
-      ctx.fillStyle = '#0ea5e9';
-      ctx.beginPath();
-      ctx.arc(0, -2, 10, 0, Math.PI * 2);
-      ctx.fill();
+    if (img && img.loaded) {
+      ctx.drawImage(img, -size * 0.5, -size, size, size);
 
-      ctx.fillStyle = '#e0f2fe';
-      ctx.beginPath();
-      ctx.arc(3, -3, 4, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // 敌方机甲造型随波次区分
-      const isBoss = waveNum === 5 || waveNum === 10;
-      const radius = isBoss ? 27 : 22;
-      ctx.fillStyle = hitFlash > 0 ? '#fecaca' : '#1e1b4b';
-      ctx.strokeStyle = accentColor;
-      ctx.lineWidth = isBoss ? 3.2 : 2.4;
-      ctx.beginPath();
-      const sides = isBoss ? 8 : 6;
-      for (let i = 0; i < sides; i++) {
-        const angle = (Math.PI * 2 * i) / sides - Math.PI / 2;
-        const px = Math.cos(angle) * radius;
-        const py = Math.sin(angle) * radius;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+      if (hitFlash > 0) {
+        const fctx = this.flashCtx;
+        fctx.clearRect(0, 0, 256, 256);
+        fctx.globalCompositeOperation = 'source-over';
+        fctx.drawImage(img, 0, 0, 256, 256);
+        fctx.globalCompositeOperation = 'source-in';
+        fctx.fillStyle = '#ffffff';
+        fctx.fillRect(0, 0, 256, 256);
+        fctx.globalCompositeOperation = 'source-over';
+
+        ctx.globalAlpha = Math.min(0.85, hitFlash * 5);
+        ctx.drawImage(this.flashCanvas, -size * 0.5, -size, size, size);
+        ctx.globalAlpha = 1;
       }
-      ctx.closePath();
+    } else {
+      // 图片加载前的精致兜底轮廓
+      ctx.fillStyle = isEnemy ? '#9f1239' : '#0284c7';
+      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(-size * 0.3, -size * 0.85, size * 0.6, size * 0.8, 12);
       ctx.fill();
       ctx.stroke();
+    }
+    ctx.restore();
+  }
 
-      // 敌方核心护目镜
-      ctx.fillStyle = accentColor;
+  drawGameHpBar(x, y, width, hp, trailHp, maxHp, shield, fillColor) {
+    const ctx = this.ctx;
+    const h = 12;
+
+    // 外框斜切底槽
+    ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, h, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // 延迟白色掉血残影
+    const trailPct = Math.max(0, Math.min(1, trailHp / Math.max(1, maxHp)));
+    if (trailPct > 0) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
       ctx.beginPath();
-      ctx.roundRect(-12, -5, 24, 9, 4);
-      ctx.fill();
-      ctx.fillStyle = '#fff1f2';
-      ctx.beginPath();
-      ctx.arc(-4, -0.5, 2.5, 0, Math.PI * 2);
+      ctx.roundRect(x + 1.5, y + 1.5, Math.max(0, (width - 3) * trailPct), h - 3, 2.5);
       ctx.fill();
     }
 
-    ctx.restore();
+    // 实血量条
+    const hpPct = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
+    if (hpPct > 0) {
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, fillColor);
+      grad.addColorStop(1, '#0f172a');
+      ctx.fillStyle = fillColor;
+      ctx.beginPath();
+      ctx.roundRect(x + 1.5, y + 1.5, Math.max(0, (width - 3) * hpPct), h - 3, 2.5);
+      ctx.fill();
+
+      // 顶部高光条
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.fillRect(x + 3, y + 2, Math.max(0, (width - 6) * hpPct), 2.5);
+    }
+
+    // 护盾条
+    if (shield > 0) {
+      const sPct = Math.min(1, shield / Math.max(1, maxHp));
+      ctx.fillStyle = '#fbbf24';
+      ctx.beginPath();
+      ctx.roundRect(x + 1, y + h + 2, Math.max(4, (width - 2) * sPct), 4, 2);
+      ctx.fill();
+    }
+
+    // 描边数值
+    const label = shield > 0 ? `${hp}/${maxHp} +${shield}🛡` : `${hp}/${maxHp}`;
+    ctx.font = '800 10.5px "Space Grotesk", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#090d16';
+    ctx.strokeText(label, x + width / 2, y - 4);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(label, x + width / 2, y - 4);
   }
 
   render() {
     const ctx = this.ctx;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
+    const { w, h, isExpanded, floorY, spriteSize, pX, eX } = this.getStageAnchors();
     ctx.clearRect(0, 0, w, h);
 
     ctx.save();
@@ -418,139 +692,218 @@ export class BattleArena {
       );
     }
 
-    // 背景网格线与能量地平线
-    const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
-    bgGrad.addColorStop(0, '#0b1224');
-    bgGrad.addColorStop(1, '#111c33');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.08)';
-    ctx.lineWidth = 1;
-    for (let x = 20; x < w; x += 28) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    ctx.moveTo(0, h * 0.78);
-    ctx.lineTo(w, h * 0.78);
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.2)';
-    ctx.stroke();
+    this.drawHangarBackground(w, h);
 
     const waveNum = this.report?.wave || this.previewState?.wave || 1;
     const waveCfg = WAVE_CONFIGS[waveNum - 1] || WAVE_CONFIGS[0];
 
-    // 加时风暴警告氛围
     if (this.mode === 'playing' && this.simTime >= OVERTIME_START_SEC) {
-      ctx.fillStyle = `rgba(245, 158, 11, ${0.08 + Math.sin(this.idlePhase * 3) * 0.04})`;
+      ctx.fillStyle = `rgba(245, 158, 11, ${0.14 + Math.sin(this.idlePhase * 3) * 0.06})`;
+      ctx.fillRect(0, 0, w, h);
+    } else if (waveCfg.isBoss) {
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.07)';
       ctx.fillRect(0, 0, w, h);
     }
 
-    const pX = w * 0.22;
-    const pY = h * 0.56;
-    const eX = w * 0.78;
-    const eY = h * 0.54;
+    // 英雄与敌方角色渲染
+    this.drawSpriteCharacter({
+      img: this.assets.hero,
+      cx: pX,
+      floorY,
+      size: spriteSize,
+      phaseOffset: 0,
+      kick: this.playerAttackKick,
+      knockback: this.playerKnockback,
+      isEnemy: false,
+      hitFlash: this.playerHitFlash,
+      shield: this.playerShield,
+      auraColor: '#38bdf8',
+    });
 
-    this.drawMech(pX, pY, false, waveNum, '#38bdf8', this.playerHitFlash, this.playerShield);
-    this.drawMech(
-      eX,
-      eY,
-      true,
-      waveNum,
-      waveCfg.accentColor,
-      this.enemyHitFlash,
-      this.enemyShield
-    );
+    this.drawSpriteCharacter({
+      img: waveCfg.isBoss ? this.assets.boss : this.assets.enemy,
+      cx: eX,
+      floorY,
+      size: waveCfg.isBoss ? spriteSize * 1.12 : spriteSize,
+      phaseOffset: 1.8,
+      kick: this.enemyAttackKick,
+      knockback: this.enemyKnockback,
+      isEnemy: true,
+      hitFlash: this.enemyHitFlash,
+      shield: this.enemyShield,
+      auraColor: waveCfg.accentColor,
+    });
 
-    // 光环扩散
+    // 扩散护盾/冲击光环
     for (const rg of this.rings) {
       ctx.strokeStyle = rg.color;
       ctx.globalAlpha = Math.max(0, rg.life / rg.maxLife);
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
 
-    // 弹道激光
-    for (const pr of this.projectiles) {
-      const px = pr.x + (pr.tx - pr.x) * pr.progress;
-      const py = pr.y + (pr.ty - pr.y) * pr.progress - Math.sin(pr.progress * Math.PI) * 18;
-      ctx.strokeStyle = pr.color;
-      ctx.lineWidth = pr.isCrit ? 5 : 3;
+    // 磁轨狙击光束
+    for (const bm of this.beams) {
+      const alpha = Math.max(0, bm.life / bm.maxLife);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = bm.color;
+      ctx.lineWidth = bm.width;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(px - (pr.tx - pr.x) * 0.1, py);
-      ctx.lineTo(px, py);
+      ctx.moveTo(bm.x1, bm.y1);
+      ctx.lineTo(bm.x2, bm.y2);
       ctx.stroke();
 
-      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(2, bm.width * 0.4);
       ctx.beginPath();
-      ctx.arc(px, py, pr.isCrit ? 4 : 2.5, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(bm.x1, bm.y1);
+      ctx.lineTo(bm.x2, bm.y2);
+      ctx.stroke();
+      ctx.restore();
     }
 
-    // 血条
-    this.drawHpBar(12, 22, 112, this.playerHp, this.playerMaxHp, this.playerShield, '#22c55e');
-    this.drawHpBar(
-      w - 124,
-      22,
-      112,
-      this.enemyHp,
-      this.enemyMaxHp,
-      this.enemyShield,
-      waveCfg.accentColor
-    );
+    // 电弧闪电链
+    for (const bl of this.bolts) {
+      const alpha = Math.max(0, bl.life / bl.maxLife);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = bl.color;
+      ctx.lineWidth = 4.5;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      bl.pts.forEach(([x, y], idx) => (idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.stroke();
 
-    // 双方名字
-    ctx.font = '700 11px system-ui, "Noto Sans SC", sans-serif';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 弹道斩击与火球
+    for (const pr of this.projectiles) {
+      const px = pr.x + (pr.tx - pr.x) * pr.progress;
+      const py = pr.y + (pr.ty - pr.y) * pr.progress - Math.sin(pr.progress * Math.PI) * 14;
+      ctx.save();
+      ctx.translate(px, py);
+      if (pr.kind === 'slash') {
+        ctx.strokeStyle = pr.color;
+        ctx.lineWidth = pr.isCrit ? 5.5 : 3.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, pr.isCrit ? 14 : 10, -0.9, 0.9);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = pr.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff1f2';
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // 枪口闪光
+    for (const mf of this.muzzleFlashes) {
+      const a = mf.life / mf.maxLife;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(mf.x, mf.y, mf.r * a, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 火花颗粒
+    for (const pt of this.particles) {
+      const a = Math.max(0, pt.life / pt.maxLife);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = pt.color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.r * a, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 双方游戏风格血条
+    this.drawGameHpBar(10, 18, 128, this.playerHp, this.playerTrailHp, this.playerMaxHp, this.playerShield, '#22c55e');
+    this.drawGameHpBar(w - 138, 18, 128, this.enemyHp, this.enemyTrailHp, this.enemyMaxHp, this.enemyShield, waveCfg.accentColor);
+
+    // 双方底部名字牌
+    ctx.font = '800 10.5px "Space Grotesk", "Noto Sans SC", system-ui, sans-serif';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#090d16';
+
     ctx.textAlign = 'left';
+    ctx.strokeText('星匣先锋', 10, h - 7);
     ctx.fillStyle = '#7dd3fc';
-    ctx.fillText('星匣先锋', 12, h - 9);
+    ctx.fillText('星匣先锋', 10, h - 7);
 
     ctx.textAlign = 'right';
-    ctx.fillStyle = waveCfg.isBoss ? '#fbbf24' : '#cbd5e1';
-    ctx.fillText(waveCfg.name, w - 12, h - 9);
+    const enemyLabel = waveCfg.isBoss ? `👑 ${waveCfg.name}` : waveCfg.name;
+    ctx.strokeText(enemyLabel, w - 10, h - 7);
+    ctx.fillStyle = waveCfg.isBoss ? '#fde047' : '#fca5a5';
+    ctx.fillText(enemyLabel, w - 10, h - 7);
 
-    // 异常状态标签
+    // 异常状态图标条
     const statuses = [];
     if (this.enemyBurn > 0) statuses.push(`🔥${this.enemyBurn}`);
     if (this.enemyShock > 0) statuses.push(`⚡${this.enemyShock}`);
     if (this.enemyChill > 0) statuses.push(`❄️${this.enemyChill}`);
     if (statuses.length > 0) {
       ctx.textAlign = 'center';
-      ctx.font = '600 11px system-ui, sans-serif';
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillText(statuses.join(' '), eX, eY + 38);
+      ctx.font = '800 11px system-ui, sans-serif';
+      ctx.strokeText(statuses.join(' '), eX, Math.min(h - 22, floorY - spriteSize - 2));
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(statuses.join(' '), eX, Math.min(h - 22, floorY - spriteSize - 2));
     }
 
-    // 中央战斗计时 / 敌人预告
+    // 中央对抗信息 / 战斗计时器
     ctx.textAlign = 'center';
     if (this.mode === 'playing') {
-      ctx.font = '700 12.5px ui-monospace, monospace';
-      ctx.fillStyle = this.simTime >= OVERTIME_START_SEC ? '#fbbf24' : '#cbd5e1';
-      const label =
+      const timeLabel =
         this.simTime >= OVERTIME_START_SEC
-          ? `⚡加时 ${this.simTime.toFixed(1)}s`
-          : `${this.simTime.toFixed(1)}s`;
-      ctx.fillText(label, w / 2, 22);
+          ? `⚡风暴 ${this.simTime.toFixed(1)}s`
+          : `⚔️ ${this.simTime.toFixed(1)}s`;
+      ctx.font = '800 12px ui-monospace, monospace';
+      ctx.strokeText(timeLabel, w / 2, 24);
+      ctx.fillStyle = this.simTime >= OVERTIME_START_SEC ? '#fde047' : '#e0f2fe';
+      ctx.fillText(timeLabel, w / 2, 24);
     } else {
-      ctx.font = '600 11px system-ui, "Noto Sans SC", sans-serif';
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`攻${waveCfg.attack} / ${waveCfg.cooldownSec}s`, w / 2, 22);
+      const infoLabel = `VS · 敌攻${waveCfg.attack}/${waveCfg.cooldownSec}s`;
+      ctx.font = '800 10.5px "Noto Sans SC", system-ui, sans-serif';
+      ctx.strokeText(infoLabel, w / 2, 22);
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText(infoLabel, w / 2, 22);
     }
 
-    // 飘字
+    // 粗描边弹跳伤害飘字
     for (const ft of this.floatingTexts) {
+      const alpha = Math.max(0, Math.min(1, (ft.life / ft.maxLife) * 1.4));
+      const pop = 1 + Math.max(0, (ft.life / ft.maxLife - 0.75) * 1.5);
       ctx.save();
-      ctx.globalAlpha = Math.max(0, ft.life / ft.maxLife);
-      ctx.font = `800 ${Math.round(13 * ft.scale)}px system-ui, "Noto Sans SC", sans-serif`;
-      ctx.fillStyle = ft.color;
+      ctx.globalAlpha = alpha;
+      ctx.font = `900 ${Math.round(14 * ft.scale * pop)}px "Space Grotesk", "Noto Sans SC", system-ui, sans-serif`;
       ctx.textAlign = 'center';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#090d16';
+      ctx.strokeText(ft.text, ft.x, ft.y);
+      ctx.fillStyle = ft.color;
       ctx.fillText(ft.text, ft.x, ft.y);
       ctx.restore();
+    }
+
+    if (isExpanded && this.mode === 'playing') {
+      // 仅轻微压暗底部边缘
     }
 
     ctx.restore();

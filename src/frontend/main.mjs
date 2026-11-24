@@ -1,7 +1,10 @@
 /**
- * 《星匣乱斗：口袋军械库》(Stargrid Arsenal)
- * 前端主控制器：支持 5x5 多格拖拽、一键上阵/旋转/合成、连携光缆可视化、
- * 60fps 战斗回放、图鉴弹窗，以及 A组等待 Codex 提交后端的诊断大厅模式。
+ * 《星匣乱斗：口袋军械库》(Stargrid Arsenal) v2.0
+ * 前端主控制器：
+ * - 启动主封面 (Title Splash)
+ * - 相位镜头调度（整备紧凑预览 -> 战斗 215px 剧场放大）
+ * - 5×5 无缝多格轮廓合并 (Unified Polyomino Hulls) 与旋转姿态对齐
+ * - 拖拽 / 点选上阵 / 二合一升星 / 60fps 战斗动画 / 图鉴与 A组协作诊断大厅
  */
 
 import {
@@ -19,15 +22,36 @@ import {
   WAVE_CONFIGS,
 } from '../../shared/protocol.mjs';
 import * as Engine from '../backend/engine.mjs';
-import { getItemSvg, getMiniShapeSvg, getRelicSvg, renderStars } from './art.mjs';
+import {
+  getItemSvg,
+  getMiniShapeSvg,
+  getPlacedItemVisualHtml,
+  getRelicSvg,
+  renderStars,
+} from './art.mjs';
 import { BattleArena } from './arena.mjs';
 import { sfx } from './sfx.mjs';
 
 const appRoot = document.getElementById('app');
 
+const HULL_PALETTES = {
+  plasma_dagger: { top: '#0284c7', bot: '#0c4a6e', border: '#38bdf8', lip: '#082f49' },
+  rail_rifle: { top: '#4f46e5', bot: '#1e1b4b', border: '#818cf8', lip: '#1e1b4b' },
+  arc_launcher: { top: '#7e22ce', bot: '#3b0764', border: '#c084fc', lip: '#2e1065' },
+  aegis_buckler: { top: '#d97706', bot: '#78350f', border: '#fbbf24', lip: '#451a03' },
+  cryo_plate: { top: '#0d9488', bot: '#042f2e', border: '#2dd4bf', lip: '#042f2e' },
+  solar_core: { top: '#e11d48', bot: '#881337', border: '#fb7185', lip: '#4c0519' },
+  chrono_battery: { top: '#059669', bot: '#064e3b', border: '#34d399', lip: '#022c22' },
+  nano_medkit: { top: '#16a34a', bot: '#14532d', border: '#4ade80', lip: '#052e16' },
+};
+
 function showToast(msg) {
-  const root = document.getElementById('toast-root');
-  if (!root) return;
+  let root = document.getElementById('toast-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'toast-root';
+    document.body.appendChild(root);
+  }
   root.innerHTML = `<div class="toast">${msg}</div>`;
   clearTimeout(showToast._timer);
   showToast._timer = setTimeout(() => {
@@ -36,7 +60,7 @@ function showToast(msg) {
 }
 
 // =====================================================================
-// 分支 A：若后端尚未由 Codex 实现，渲染 A组协作诊断大厅与图鉴预览
+// 分支 A：若后端尚未由 Codex 实现，渲染升级版 A组协作诊断大厅
 // =====================================================================
 function renderCodexLobby() {
   let activeTab = 'status';
@@ -59,15 +83,18 @@ function renderCodexLobby() {
         </div>
       </header>
 
+      <div class="lobby-banner">
+        <div class="lobby-banner-bg"></div>
+        <img src="./src/frontend/assets/hero-mech.png" alt="星匣先锋" style="width:68px;height:68px;object-fit:contain;position:relative;z-index:1;filter:drop-shadow(0 6px 10px rgba(0,0,0,0.8));" />
+        <div style="position:relative;z-index:1;flex:1;">
+          <div style="font-size:15px;font-weight:900;color:#e0f2fe;">《星匣乱斗》前端 v2.0 已就绪</div>
+          <div style="font-size:11.5px;color:#cbd5e1;line-height:1.4;margin-top:2px;">
+            已装配高清机甲精灵、无缝多格轮廓与 60fps 战报剧场。等待 GPT (Codex) 在 GitHub 提交 <code>src/backend/engine.mjs</code> 后即可直接试玩！
+          </div>
+        </div>
+      </div>
+
       <div class="lobby-card">
-        <div style="font-size:15px;font-weight:800;color:#e0f2fe;">
-          前端界面与协议契约已 100% 就绪
-        </div>
-        <div style="font-size:12px;color:#94a3b8;line-height:1.5;">
-          当前 <code style="color:#7dd3fc;">src/backend/engine.mjs</code> 中的
-          <code style="color:#fde047;">IS_BACKEND_IMPLEMENTED</code> 为 <code>false</code>。
-          当 GPT (Codex) 在 GitHub 提交后端代码并跑通契约测试后，刷新本页即可直接开玩！
-        </div>
         <div class="export-grid">
           ${REQUIRED_ENGINE_EXPORTS.map((name) => {
             const ok = isImpl(name);
@@ -90,25 +117,22 @@ function renderCodexLobby() {
           activeTab === 'status'
             ? `
           <div class="lobby-card">
-            <div style="font-size:13px;font-weight:700;color:#34d399;">如何让 GPT (Codex) 自动写完后端？</div>
+            <div style="font-size:13px;font-weight:800;color:#34d399;">如何让 GPT (Codex) 自动接手后端？</div>
             <div style="font-size:12px;color:#cbd5e1;line-height:1.6;">
-              1. 将本地仓库推送到你的 GitHub 仓库。<br/>
-              2. 打开 <b>chatgpt.com/codex</b> 并选中该仓库。<br/>
-              3. 发送指令：<i>“请阅读 GAME_DESIGN.md 和 BACKEND_TASK.md，完整实现 src/backend/engine.mjs 并将 IS_BACKEND_IMPLEMENTED 设为 true，运行 node --test tests/contract.test.mjs 直到全部通过后发起 PR。”</i><br/>
-              4. 回到此处让 Antigravity 拉取代码并出具双版本对比评测！
+              1. 仓库已推送至 GitHub，在 <b>chatgpt.com/codex</b> 选中本仓库。<br/>
+              2. 下达指令：<i>“请阅读 GAME_DESIGN.md 与 BACKEND_TASK.md，实现 src/backend/engine.mjs 并将 IS_BACKEND_IMPLEMENTED 设为 true，运行 node --test tests/contract.test.mjs 全部通过后提交 PR。”</i><br/>
+              3. 拉取 PR 后刷新本页面即可与 B 组全栈版同屏对打对比！
             </div>
-            <div style="font-size:11px;color:#94a3b8;">
-              缺少函数数量：${missingExports.length} 个（桩函数已预置签名）
-            </div>
+            <div style="font-size:11px;color:#94a3b8;">待实现契约项：${missingExports.length} 个</div>
           </div>
           <div class="lobby-card">
-            <div style="font-size:13px;font-weight:700;color:#fbbf24;">5 种局内遗物预览</div>
+            <div style="font-size:13px;font-weight:800;color:#fbbf24;">5 种局内遗物预览</div>
             ${RELIC_IDS.map((id) => {
               const r = RELIC_CATALOG[id];
               return `<div class="codex-item-row">
-                <div>${getRelicSvg(id, 30)}</div>
+                <div>${getRelicSvg(id, 32)}</div>
                 <div>
-                  <div style="font-size:12px;font-weight:700;color:${r.color};">${r.name}</div>
+                  <div style="font-size:12px;font-weight:800;color:${r.color};">${r.name}</div>
                   <div style="font-size:11px;color:#94a3b8;">${r.description}</div>
                 </div>
               </div>`;
@@ -119,10 +143,10 @@ function renderCodexLobby() {
               ? ITEM_IDS.map((id) => {
                   const item = ITEM_CATALOG[id];
                   return `<div class="codex-item-row">
-                    <div>${getItemSvg(id, 38)}</div>
+                    <div>${getItemSvg(id, 40)}</div>
                     <div style="flex:1;">
                       <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span style="font-size:12px;font-weight:700;color:${item.color};">
+                        <span style="font-size:12px;font-weight:800;color:${item.color};">
                           ${item.name} · ${CATEGORY_META[item.category].label}
                         </span>
                         <span style="font-size:11px;color:#fde047;">💰${item.cost}</span>
@@ -138,7 +162,7 @@ function renderCodexLobby() {
                       第${w.wave}波${w.isBoss ? '<br/>BOSS' : ''}
                     </div>
                     <div style="flex:1;">
-                      <div style="font-size:12px;font-weight:700;">${w.name}</div>
+                      <div style="font-size:12px;font-weight:800;">${w.name}</div>
                       <div style="font-size:11px;color:#cbd5e1;">
                         HP ${w.maxHp} · 护盾 ${w.initialShield} · 攻 ${w.attack}/${w.cooldownSec}s · 奖励 ${w.baseRewardGold}💰
                       </div>
@@ -162,26 +186,107 @@ function renderCodexLobby() {
 }
 
 // =====================================================================
-// 分支 B：后端已就绪，启动完整游戏
+// 分支 B：启动主封面与完整可玩游戏
 // =====================================================================
+function renderCodexModalHtml() {
+  return `
+    <div class="modal-backdrop" id="codex-backdrop">
+      <div class="modal-card">
+        <h2 class="modal-title">
+          <span>📖 军械库图鉴与规则</span>
+          <button class="icon-btn" id="close-codex">✕</button>
+        </h2>
+        <div style="font-size:12px;color:#cbd5e1;line-height:1.55;">
+          • 将多格武器、护盾、晶核拼入 <b>5×5 装甲星匣</b>，同星级同装备叠放即可<b>二合一升星</b>（最高 ★★★）。<br/>
+          • 装备正交相邻激活<b>金色流光连携</b>（多格装备仅计相邻 1 次）。<br/>
+          • 第 <b>2 / 5 / 8</b> 波胜利抽取强化遗物，坚持通过第 10 波终极首领！
+        </div>
+        ${ITEM_IDS.map((id) => {
+          const item = ITEM_CATALOG[id];
+          return `<div class="codex-item-row">
+            <div>${getItemSvg(id, 38)}</div>
+            <div style="flex:1;">
+              <div style="font-size:12px;font-weight:800;color:${item.color};">
+                ${item.name} (${RARITY_META[item.rarity].label} · 💰${item.cost})
+              </div>
+              <div style="font-size:11px;color:#94a3b8;">${item.description}</div>
+              <div style="font-size:11px;color:#fbbf24;">连携：${item.synergyDesc}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function showSplashScreen(onStart) {
+  appRoot.classList.remove('battle-mode');
+  appRoot.innerHTML = `
+    <section class="splash-screen">
+      <div class="splash-bg"></div>
+      <div class="splash-vignette"></div>
+
+      <div class="splash-header">
+        <span class="splash-kicker">TAPTAP 竖屏肉鸽独立试玩版</span>
+        <h1 class="splash-title">星匣乱斗<br/>口袋军械库</h1>
+        <p class="splash-sub">STARGRID ARSENAL · 拼装 · 升星 · 自动迎战</p>
+      </div>
+
+      <div class="splash-stage">
+        <img class="splash-mech hero" src="./src/frontend/assets/hero-mech.png" alt="星匣先锋" />
+        <span class="splash-vs">VS</span>
+        <img class="splash-mech boss" src="./src/frontend/assets/boss-overlord.png" alt="星渊主宰" />
+      </div>
+
+      <div class="splash-footer">
+        <div class="splash-tags">
+          <span class="splash-tag">🧩 5×5 异形拼装</span>
+          <span class="splash-tag">⭐ 二合一升星</span>
+          <span class="splash-tag">⚡ 邻接晶核超载</span>
+        </div>
+        <button id="btn-start-game" class="arcade-btn">🚀 启动星匣 · 立刻出击</button>
+        <button id="btn-splash-codex" class="arcade-btn secondary">📖 查看 8 件装备图鉴</button>
+      </div>
+    </section>
+    <div id="modal-root"></div>
+    <div id="toast-root"></div>
+  `;
+
+  document.getElementById('btn-start-game').addEventListener('click', () => {
+    sfx.playMerge();
+    onStart();
+  });
+
+  const modalRoot = document.getElementById('modal-root');
+  document.getElementById('btn-splash-codex').addEventListener('click', () => {
+    modalRoot.innerHTML = renderCodexModalHtml();
+    document.getElementById('close-codex').addEventListener('click', () => {
+      modalRoot.innerHTML = '';
+    });
+    document.getElementById('codex-backdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'codex-backdrop') modalRoot.innerHTML = '';
+    });
+  });
+}
+
 function bootPlayableGame() {
   let state = Engine.createInitialState(20261124);
-  let selectedRef = null; // { source: 'grid' | 'stash', instanceId }
+  let selectedRef = null;
   let isPlayingBattle = false;
   let battleSpeed = 1;
   let showBattleSummaryModal = false;
   let showCodexModal = false;
-  let triggeredInstanceIds = new Map(); // instanceId -> timeoutId
+  const triggeredInstanceIds = new Map();
   let drag = null;
 
   appRoot.innerHTML = `
     <header id="hud-bar" class="hud-bar"></header>
     <div class="arena-wrap">
-      <canvas id="arena-canvas" class="arena-canvas" width="404" height="122"></canvas>
+      <canvas id="arena-canvas" class="arena-canvas" width="404" height="102"></canvas>
       <div id="battle-controls" class="battle-controls" hidden>
         <button class="icon-btn active" data-speed="1">1×</button>
         <button class="icon-btn" data-speed="2">2×</button>
-        <button class="icon-btn" data-skip="1">跳过结算 ⏭</button>
+        <button class="icon-btn" data-skip="1">跳过 ⏭</button>
       </div>
     </div>
     <div class="stats-relics-bar">
@@ -205,6 +310,7 @@ function bootPlayableGame() {
     <div id="toast-root"></div>
   `;
 
+  const canvasEl = document.getElementById('arena-canvas');
   const hudEl = document.getElementById('hud-bar');
   const overlayTopEl = document.getElementById('arena-overlay-top');
   const battleControlsEl = document.getElementById('battle-controls');
@@ -218,15 +324,15 @@ function bootPlayableGame() {
   const battleCtaEl = document.getElementById('battle-cta');
   const modalRootEl = document.getElementById('modal-root');
 
-  // 初始化 25 个背景网格单元
   const cellElements = [];
   for (let r = 0; r < GRID_ROWS; r++) {
     for (let c = 0; c < GRID_COLS; c++) {
-      const cell = document.createElement('div');
-      cell.className = 'grid-cell';
-      cell.dataset.row = String(r);
-      cell.dataset.col = String(c);
-      cell.addEventListener('click', () => {
+      const slot = document.createElement('div');
+      slot.className = 'grid-cell-slot';
+      slot.dataset.row = String(r);
+      slot.dataset.col = String(c);
+      slot.innerHTML = '<div class="grid-cell-socket"></div>';
+      slot.addEventListener('click', () => {
         if (isPlayingBattle || state.phase !== 'prep') return;
         if (!selectedRef) return;
         const item = findItemByInstanceId(selectedRef.instanceId);
@@ -252,21 +358,19 @@ function bootPlayableGame() {
           } else {
             sfx.playPlace();
           }
-          if (!findItemByInstanceId(item.instanceId)) {
-            selectedRef = null;
-          }
+          if (!findItemByInstanceId(item.instanceId)) selectedRef = null;
           renderAll();
         } catch (err) {
           sfx.playError();
           showToast(err.message);
         }
       });
-      gridCellsBgEl.appendChild(cell);
-      cellElements.push(cell);
+      gridCellsBgEl.appendChild(slot);
+      cellElements.push(slot);
     }
   }
 
-  const arena = new BattleArena(document.getElementById('arena-canvas'), {
+  const arena = new BattleArena(canvasEl, {
     onItemTrigger: (instanceId) => {
       if (triggeredInstanceIds.has(instanceId)) {
         clearTimeout(triggeredInstanceIds.get(instanceId));
@@ -279,11 +383,13 @@ function bootPlayableGame() {
           .querySelectorAll(`[data-instance-id="${instanceId}"]`)
           .forEach((el) => el.classList.remove('triggered'));
         triggeredInstanceIds.delete(instanceId);
-      }, 220);
+      }, 210);
       triggeredInstanceIds.set(instanceId, tid);
     },
     onPlaybackComplete: () => {
       isPlayingBattle = false;
+      appRoot.classList.remove('battle-mode');
+      canvasEl.height = 102;
       battleControlsEl.hidden = true;
       showBattleSummaryModal = true;
       renderAll();
@@ -323,8 +429,8 @@ function bootPlayableGame() {
       sumC += c;
     }
     return {
-      x: ((sumC / cells.length) + 0.5) * 20,
-      y: ((sumR / cells.length) + 0.5) * 20,
+      x: (sumC / cells.length + 0.5) * 20,
+      y: (sumR / cells.length + 0.5) * 20,
       cells,
     };
   }
@@ -338,7 +444,7 @@ function bootPlayableGame() {
           ${waveCfg.isBoss ? '👑 ' : ''}第 ${state.wave}/${MAX_WAVES} 波
         </span>
         <span class="pill gold">💰 ${state.gold}</span>
-        <span class="pill lives" title="剩余生命">${hearts}</span>
+        <span class="pill lives">${hearts}</span>
       </div>
       <div class="hud-group">
         <button class="icon-btn" id="btn-codex">图鉴</button>
@@ -361,7 +467,7 @@ function bootPlayableGame() {
       showBattleSummaryModal = false;
       arena.setPreview(state);
       renderAll();
-      showToast('已开始全新一局！');
+      showToast('已重置战局，开启新征程！');
     });
   }
 
@@ -380,7 +486,7 @@ function bootPlayableGame() {
         .map((id) => {
           const r = RELIC_CATALOG[id];
           return `<span class="relic-chip" title="${r.description}">
-            ${getRelicSvg(id, 16)} <span>${r.name}</span>
+            ${getRelicSvg(id, 15)} <span>${r.name}</span>
           </span>`;
         })
         .join('');
@@ -393,7 +499,6 @@ function bootPlayableGame() {
       centroids.set(item.instanceId, getItemCentroidPercent(item));
     }
 
-    // 绘制连携流光连线
     synergySvgEl.innerHTML = synergies.links
       .filter((link) => link.active)
       .map((link) => {
@@ -404,15 +509,37 @@ function bootPlayableGame() {
       })
       .join('');
 
-    // 绘制装备多格瓦片与图标覆盖层
     gridItemsLayerEl.innerHTML = '';
     for (const item of state.placedItems) {
       const def = ITEM_CATALOG[item.itemId];
+      const pal = HULL_PALETTES[item.itemId] || {
+        top: '#1e293b',
+        bot: '#0f172a',
+        border: def.color,
+        lip: '#090d16',
+      };
       const info = centroids.get(item.instanceId);
       const stats = synergies.itemStats[item.instanceId];
       const isSelected = selectedRef?.instanceId === item.instanceId;
+      const cellSet = new Set(info.cells.map(([r, c]) => `${r},${c}`));
 
+      // 逐格渲染无缝连接的多格装甲模块外壳
       for (const [r, c] of info.cells) {
+        const hasUp = cellSet.has(`${r - 1},${c}`);
+        const hasDown = cellSet.has(`${r + 1},${c}`);
+        const hasLeft = cellSet.has(`${r},${c - 1}`);
+        const hasRight = cellSet.has(`${r},${c + 1}`);
+
+        const padT = hasUp ? '0px' : '2.5px';
+        const padB = hasDown ? '0px' : '2.5px';
+        const padL = hasLeft ? '0px' : '2.5px';
+        const padR = hasRight ? '0px' : '2.5px';
+
+        const rTL = !hasUp && !hasLeft ? '9px' : '0px';
+        const rTR = !hasUp && !hasRight ? '9px' : '0px';
+        const rBL = !hasDown && !hasLeft ? '9px' : '0px';
+        const rBR = !hasDown && !hasRight ? '9px' : '0px';
+
         const cellTile = document.createElement('div');
         cellTile.className = `grid-piece-cell${isSelected ? ' selected' : ''}`;
         cellTile.dataset.instanceId = item.instanceId;
@@ -420,9 +547,20 @@ function bootPlayableGame() {
         cellTile.style.top = `${r * 20}%`;
         cellTile.style.width = '20%';
         cellTile.style.height = '20%';
+        cellTile.style.padding = `${padT} ${padR} ${padB} ${padL}`;
         cellTile.style.setProperty('--item-color', def.color);
-        cellTile.innerHTML = `<div class="grid-piece-fill"></div>`;
+        cellTile.style.setProperty('--hull-top', pal.top);
+        cellTile.style.setProperty('--hull-bot', pal.bot);
 
+        const hull = document.createElement('div');
+        hull.className = 'grid-piece-hull';
+        hull.style.borderRadius = `${rTL} ${rTR} ${rBR} ${rBL}`;
+        hull.style.borderTop = hasUp ? 'none' : `2px solid ${pal.border}`;
+        hull.style.borderBottom = hasDown ? 'none' : `3px solid ${pal.lip}`;
+        hull.style.borderLeft = hasLeft ? 'none' : `2px solid ${pal.border}`;
+        hull.style.borderRight = hasRight ? 'none' : `2px solid ${pal.border}`;
+
+        cellTile.appendChild(hull);
         cellTile.addEventListener('pointerdown', (e) => {
           if (isPlayingBattle || state.phase !== 'prep') return;
           startDrag(e, {
@@ -439,22 +577,24 @@ function bootPlayableGame() {
         gridItemsLayerEl.appendChild(cellTile);
       }
 
-      // 在质心渲染矢量图标、星级与连携灯
+      // 整体外接矩形内绘制自适应姿态的高精武器插画与星级
       const minR = Math.min(...info.cells.map(([r]) => r));
       const maxR = Math.max(...info.cells.map(([r]) => r));
       const minC = Math.min(...info.cells.map(([, c]) => c));
       const maxC = Math.max(...info.cells.map(([, c]) => c));
+      const spanRows = maxR - minR + 1;
+      const spanCols = maxC - minC + 1;
 
       const overlay = document.createElement('div');
       overlay.className = 'grid-piece-overlay';
+      overlay.dataset.instanceId = item.instanceId;
       overlay.style.left = `${minC * 20}%`;
       overlay.style.top = `${minR * 20}%`;
-      overlay.style.width = `${(maxC - minC + 1) * 20}%`;
-      overlay.style.height = `${(maxR - minR + 1) * 20}%`;
+      overlay.style.width = `${spanCols * 20}%`;
+      overlay.style.height = `${spanRows * 20}%`;
 
-      const iconSize = info.cells.length > 1 ? 34 : 28;
       overlay.innerHTML = `
-        ${getItemSvg(item.itemId, iconSize)}
+        ${getPlacedItemVisualHtml(item.itemId, spanRows, spanCols, item.rotation || 0)}
         <span class="star-badge">${renderStars(item.level)}</span>
         ${stats?.synergyTags?.length ? '<span class="synergy-dot"></span>' : ''}
       `;
@@ -467,8 +607,8 @@ function bootPlayableGame() {
     if (!selected) {
       inspectorBarEl.innerHTML = `
         <div class="inspector-info">
-          <div class="inspector-title">💡 战术整备提示</div>
-          <div class="inspector-sub">点击或拖拽装备到 5×5 格子，同星级叠放二合一升星！</div>
+          <div class="inspector-title">💡 军械星匣整备指南</div>
+          <div class="inspector-sub">拖拽或点选装备放入 5×5 装甲星匣，同星级叠放二合一升星！</div>
         </div>
       `;
       return;
@@ -538,7 +678,7 @@ function bootPlayableGame() {
       const target = findFirstValidGridCell(selected.itemId, selected.level, selected.rotation || 0);
       if (!target) {
         sfx.playError();
-        showToast('背包暂无空位，请先旋转或腾出格子');
+        showToast('星匣暂无空位，请旋转或腾出格子');
         return;
       }
       try {
@@ -619,7 +759,7 @@ function bootPlayableGame() {
     const canRefresh = !isPlayingBattle && state.phase === 'prep' && state.gold >= state.refreshCost;
     shopSectionEl.innerHTML = `
       <div class="shop-header">
-        <span>🛒 军械商店 <span style="font-size:10px;color:#94a3b8;font-weight:500;">(点击入舱 / 拖入格子)</span></span>
+        <span>🛒 军械商店 <span style="font-size:10px;color:#94a3b8;font-weight:600;">(点击购买 / 拖入星匣)</span></span>
         <button class="action-mini-btn" id="btn-refresh" ${canRefresh ? '' : 'disabled'}>
           🔄 刷新 ${state.refreshCost}💰
         </button>
@@ -654,7 +794,7 @@ function bootPlayableGame() {
             ${offer.locked ? '🔒' : '🔓'}
           </button>
         </div>
-        ${getItemSvg(offer.itemId, 28)}
+        ${getItemSvg(offer.itemId, 34)}
         <div class="shop-name" style="color:${def.color};">${def.name}</div>
         <div class="shop-cost ${!affordable ? 'lack' : ''}">${offer.sold ? '已售罄' : `💰 ${offer.cost}`}</div>
       `;
@@ -691,22 +831,22 @@ function bootPlayableGame() {
 
   function renderBattleCta() {
     if (isPlayingBattle) {
-      battleCtaEl.textContent = `⚔️ 第 ${state.wave} 波战斗演算中...`;
+      battleCtaEl.textContent = `⚔️ 第 ${state.wave} 波交战中...`;
       battleCtaEl.disabled = true;
       return;
     }
     if (state.phase === 'relic_draft') {
-      battleCtaEl.textContent = '✨ 请先选择一件强化遗物';
+      battleCtaEl.textContent = '✨ 请先选择 1 件强化遗物';
       battleCtaEl.disabled = false;
     } else if (state.phase === 'victory') {
-      battleCtaEl.textContent = '🏆 恭喜通关！点击查看战绩或重开';
+      battleCtaEl.textContent = '🏆 恭喜全通关！查看战绩或重开';
       battleCtaEl.disabled = false;
     } else if (state.phase === 'gameover') {
-      battleCtaEl.textContent = '💀 机甲损毁 · 点击查看战报或重开';
+      battleCtaEl.textContent = '💀 战甲损毁 · 查看战报或重开';
       battleCtaEl.disabled = false;
     } else {
       const waveCfg = WAVE_CONFIGS[state.wave - 1];
-      battleCtaEl.textContent = `⚔️ 开始第 ${state.wave} 波战斗 (${waveCfg.name})`;
+      battleCtaEl.textContent = `⚔️ 出舱迎战 · 第 ${state.wave} 波 (${waveCfg.name})`;
       battleCtaEl.disabled = false;
     }
   }
@@ -718,6 +858,8 @@ function bootPlayableGame() {
         selectedRef = null;
         state = Engine.runWaveBattle(state);
         isPlayingBattle = true;
+        appRoot.classList.add('battle-mode');
+        canvasEl.height = 215;
         battleControlsEl.hidden = false;
         showBattleSummaryModal = false;
         arena.setSpeed(battleSpeed);
@@ -735,34 +877,7 @@ function bootPlayableGame() {
 
   function renderModal() {
     if (showCodexModal) {
-      modalRootEl.innerHTML = `
-        <div class="modal-backdrop" id="codex-backdrop">
-          <div class="modal-card">
-            <h2 class="modal-title">
-              <span>📖 军械库图鉴与规则</span>
-              <button class="icon-btn" id="close-codex">✕</button>
-            </h2>
-            <div style="font-size:12px;color:#cbd5e1;line-height:1.5;">
-              • 拖动或点击装备摆入 <b>5×5 星匣网格</b>，同装备同星级叠放可<b>二合一升星</b>（最高★★★）。<br/>
-              • 正交相邻触发<b>金色连携光缆</b>（多格装备贴合仅计 1 次）。<br/>
-              • 第 <b>2 / 5 / 8</b> 波胜利后触发遗物三选一；18 秒后进入加时星渊风暴。
-            </div>
-            ${ITEM_IDS.map((id) => {
-              const item = ITEM_CATALOG[id];
-              return `<div class="codex-item-row">
-                <div>${getItemSvg(id, 34)}</div>
-                <div style="flex:1;">
-                  <div style="font-size:12px;font-weight:700;color:${item.color};">
-                    ${item.name} (${RARITY_META[item.rarity].label} · 💰${item.cost})
-                  </div>
-                  <div style="font-size:11px;color:#94a3b8;">${item.description}</div>
-                  <div style="font-size:11px;color:#fbbf24;">连携：${item.synergyDesc}</div>
-                </div>
-              </div>`;
-            }).join('')}
-          </div>
-        </div>
-      `;
+      modalRootEl.innerHTML = renderCodexModalHtml();
       document.getElementById('close-codex').addEventListener('click', () => {
         showCodexModal = false;
         renderModal();
@@ -776,14 +891,13 @@ function bootPlayableGame() {
       return;
     }
 
-    // 遗物三选一优先级仅次于刚结束的战报弹窗（先让玩家看清战报，再点按钮或直接进遗物）
     if (showBattleSummaryModal && state.lastBattleReport) {
       const rep = state.lastBattleReport;
       const maxVal = Math.max(1, ...rep.contributions.map((c) => c.damage + c.shield + c.healing));
       let ctaLabel = `➡️ 进入第 ${state.wave} 波整备`;
       if (state.phase === 'relic_draft') ctaLabel = '✨ 抽取强化遗物（三选一）';
       else if (state.phase === 'victory') ctaLabel = '🏆 通关完成 · 再来一局';
-      else if (state.phase === 'gameover') ctaLabel = '🔄 舰队阵亡 · 重新挑战';
+      else if (state.phase === 'gameover') ctaLabel = '🔄 战甲损毁 · 重新挑战';
 
       modalRootEl.innerHTML = `
         <div class="modal-backdrop">
@@ -798,7 +912,7 @@ function bootPlayableGame() {
               <span class="pill">总护盾 ${rep.totalShieldGained}</span>
             </div>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              <div style="font-size:12px;font-weight:700;color:#cbd5e1;">装备输出 / 护盾贡献榜</div>
+              <div style="font-size:12px;font-weight:800;color:#cbd5e1;">装备输出 / 护盾贡献榜</div>
               ${
                 rep.contributions.length === 0
                   ? '<div style="font-size:12px;color:#64748b;">本回合无装备参战</div>'
@@ -808,7 +922,7 @@ function bootPlayableGame() {
                         const pct = Math.round((score / maxVal) * 100);
                         return `<div class="contrib-row">
                           <div style="display:flex;justify-content:space-between;">
-                            <span style="color:${c.color};font-weight:700;">${c.name} ${renderStars(c.level)}</span>
+                            <span style="color:${c.color};font-weight:800;">${c.name} ${renderStars(c.level)}</span>
                             <span style="color:#cbd5e1;">伤${c.damage} · 盾${c.shield}${c.healing ? ` · 疗${c.healing}` : ''}</span>
                           </div>
                           <div class="contrib-bar-bg">
@@ -847,7 +961,7 @@ function bootPlayableGame() {
               .map((relicId) => {
                 const r = RELIC_CATALOG[relicId];
                 return `<button class="relic-option" data-relic="${relicId}">
-                  <div>${getRelicSvg(relicId, 38)}</div>
+                  <div>${getRelicSvg(relicId, 40)}</div>
                   <div>
                     <div style="font-size:13px;font-weight:800;color:${r.color};">${r.name}</div>
                     <div style="font-size:11.5px;color:#cbd5e1;margin-top:2px;">${r.description}</div>
@@ -874,7 +988,6 @@ function bootPlayableGame() {
   }
 
   function findFirstValidGridCell(itemId, level, rotation) {
-    // 优先空位放置，其次允许同星级合成
     let mergeCandidate = null;
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
@@ -911,9 +1024,10 @@ function bootPlayableGame() {
     const relY = Math.max(0, Math.min(rect.height - 1, clientY - rect.top));
     const ptrCol = Math.floor((relX / rect.width) * GRID_COLS);
     const ptrRow = Math.floor((relY / rect.height) * GRID_ROWS);
-    const row = ptrRow - (dragInfo.grabOffsetR || 0);
-    const col = ptrCol - (dragInfo.grabOffsetC || 0);
-    return { row, col };
+    return {
+      row: ptrRow - (dragInfo.grabOffsetR || 0),
+      col: ptrCol - (dragInfo.grabOffsetC || 0),
+    };
   }
 
   function startDrag(e, info) {
@@ -924,8 +1038,6 @@ function bootPlayableGame() {
       startY: e.clientY,
       moved: false,
       ghostEl: null,
-      lastTarget: null,
-      lastStashTargetId: null,
     };
 
     const onMove = (ev) => {
@@ -936,7 +1048,7 @@ function bootPlayableGame() {
         const ghost = document.createElement('div');
         ghost.className = 'drag-ghost';
         ghost.style.borderColor = ITEM_CATALOG[drag.itemId].color;
-        ghost.innerHTML = `${getItemSvg(drag.itemId, 38)}<span style="font-size:10px;font-weight:700;">${ITEM_CATALOG[drag.itemId].name}</span>`;
+        ghost.innerHTML = `${getItemSvg(drag.itemId, 42)}<span style="font-size:10px;font-weight:800;">${ITEM_CATALOG[drag.itemId].name}</span>`;
         document.body.appendChild(ghost);
         drag.ghostEl = ghost;
       }
@@ -949,9 +1061,6 @@ function bootPlayableGame() {
 
       clearCellPreviews();
       const target = getGridTargetFromPoint(ev.clientX, ev.clientY, drag);
-      drag.lastTarget = target;
-      drag.lastStashTargetId = null;
-
       if (target) {
         const check = Engine.validatePlacement(state, {
           itemId: drag.itemId,
@@ -974,10 +1083,7 @@ function bootPlayableGame() {
       } else {
         const elUnder = document.elementFromPoint(ev.clientX, ev.clientY);
         const stashSlot = elUnder?.closest?.('.stash-slot');
-        if (stashSlot) {
-          stashSlot.classList.add('drop-hover');
-          drag.lastStashTargetId = stashSlot.dataset.stashInstanceId || '__STASH__';
-        }
+        if (stashSlot) stashSlot.classList.add('drop-hover');
       }
     };
 
@@ -997,7 +1103,6 @@ function bootPlayableGame() {
         return;
       }
 
-      // 处理真实拖拽放置
       const target = getGridTargetFromPoint(ev.clientX, ev.clientY, currentDrag);
       if (target) {
         try {
@@ -1040,7 +1145,6 @@ function bootPlayableGame() {
         return;
       }
 
-      // 拖拽到暂存舱
       const elUnder = document.elementFromPoint(ev.clientX, ev.clientY);
       const stashSlot = elUnder?.closest?.('.stash-slot');
       if (stashSlot) {
@@ -1086,7 +1190,6 @@ function bootPlayableGame() {
         showToast('金币不足！');
         return;
       }
-      // 优先购买进暂存舱；若暂存舱已满，自动寻找背包合法位置上阵
       try {
         if (state.stashItems.length < MAX_STASH_SLOTS) {
           state = Engine.buyShopItem(state, info.slotIndex, null);
@@ -1098,7 +1201,7 @@ function bootPlayableGame() {
           const spot = findFirstValidGridCell(info.itemId, 1, 0);
           if (!spot) {
             sfx.playError();
-            showToast('暂存舱与背包均已满，请先出售装备！');
+            showToast('暂存舱与星匣均已满，请先出售装备！');
             return;
           }
           state = Engine.buyShopItem(state, info.slotIndex, {
@@ -1108,10 +1211,10 @@ function bootPlayableGame() {
           });
           if (spot.isMerge) {
             sfx.playMerge();
-            showToast(`✨ 购买并自动合成升星！`);
+            showToast('✨ 购买并自动合成升星！');
           } else {
             sfx.playBuy();
-            showToast(`暂存舱满，已直接上阵到 (${spot.row + 1},${spot.col + 1})`);
+            showToast(`暂存舱满，已自动装入 (${spot.row + 1},${spot.col + 1})`);
           }
         }
         renderAll();
@@ -1122,7 +1225,6 @@ function bootPlayableGame() {
       return;
     }
 
-    // 若已选中同款同星级装备，点击网格上的可合成目标可直接二合一升星
     if (selectedRef && selectedRef.instanceId !== info.instanceId && info.kind === 'grid') {
       const prevItem = findItemByInstanceId(selectedRef.instanceId);
       const targetItem = state.placedItems.find((p) => p.instanceId === info.instanceId);
@@ -1147,7 +1249,7 @@ function bootPlayableGame() {
           renderAll();
           return;
         } catch {
-          // 若形状/边界无法直接叠放，退回正常选中
+          // 退回正常选中
         }
       }
     }
@@ -1188,7 +1290,12 @@ function bootPlayableGame() {
 
 // 启动入口
 if (Engine.IS_BACKEND_IMPLEMENTED) {
-  bootPlayableGame();
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('autostart') === '1') {
+    bootPlayableGame();
+  } else {
+    showSplashScreen(bootPlayableGame);
+  }
 } else {
   renderCodexLobby();
 }

@@ -1,0 +1,12 @@
+{
+  "name": "stargrid-arsenal-collab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "《星匣乱斗：口袋军械库》A组（GPT/Codex 后端 + Antigravity 策划与前端协作版）",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/contract.test.mjs",
+    "pack:taptap": "node scripts/pack-taptap.mjs"
+  }
+}

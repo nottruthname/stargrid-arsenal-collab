@@ -493,11 +493,11 @@ export class BattleArena {
     }
 
     // 血条
-    this.drawHpBar(14, 24, 118, this.playerHp, this.playerMaxHp, this.playerShield, '#22c55e');
+    this.drawHpBar(12, 22, 112, this.playerHp, this.playerMaxHp, this.playerShield, '#22c55e');
     this.drawHpBar(
-      w - 132,
-      24,
-      118,
+      w - 124,
+      22,
+      112,
       this.enemyHp,
       this.enemyMaxHp,
       this.enemyShield,
@@ -508,11 +508,11 @@ export class BattleArena {
     ctx.font = '700 11px system-ui, "Noto Sans SC", sans-serif';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#7dd3fc';
-    ctx.fillText('星匣先锋', 14, h - 10);
+    ctx.fillText('星匣先锋', 12, h - 9);
 
     ctx.textAlign = 'right';
     ctx.fillStyle = waveCfg.isBoss ? '#fbbf24' : '#cbd5e1';
-    ctx.fillText(waveCfg.name, w - 14, h - 10);
+    ctx.fillText(waveCfg.name, w - 12, h - 9);
 
     // 异常状态标签
     const statuses = [];
@@ -523,23 +523,23 @@ export class BattleArena {
       ctx.textAlign = 'center';
       ctx.font = '600 11px system-ui, sans-serif';
       ctx.fillStyle = '#f8fafc';
-      ctx.fillText(statuses.join(' '), eX, eY + 42);
+      ctx.fillText(statuses.join(' '), eX, eY + 38);
     }
 
     // 中央战斗计时 / 敌人预告
     ctx.textAlign = 'center';
     if (this.mode === 'playing') {
-      ctx.font = '700 13px ui-monospace, monospace';
-      ctx.fillStyle = this.simTime >= OVERTIME_START_SEC ? '#fbbf24' : '#94a3b8';
+      ctx.font = '700 12.5px ui-monospace, monospace';
+      ctx.fillStyle = this.simTime >= OVERTIME_START_SEC ? '#fbbf24' : '#cbd5e1';
       const label =
         this.simTime >= OVERTIME_START_SEC
           ? `⚡加时 ${this.simTime.toFixed(1)}s`
           : `${this.simTime.toFixed(1)}s`;
-      ctx.fillText(label, w / 2, 26);
+      ctx.fillText(label, w / 2, 22);
     } else {
       ctx.font = '600 11px system-ui, "Noto Sans SC", sans-serif';
       ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`攻 ${waveCfg.attack} / ${waveCfg.cooldownSec}s`, w / 2, 26);
+      ctx.fillText(`攻${waveCfg.attack} / ${waveCfg.cooldownSec}s`, w / 2, 22);
     }
 
     // 飘字

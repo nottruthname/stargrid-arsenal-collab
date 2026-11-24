@@ -42,9 +42,12 @@ function renderCodexLobby() {
   let activeTab = 'status';
 
   const draw = () => {
-    const missingExports = REQUIRED_ENGINE_EXPORTS.filter(
-      (name) => name !== 'IS_BACKEND_IMPLEMENTED' && typeof Engine[name] !== 'function'
-    );
+    const isImpl = (name) => {
+      if (name === 'IS_BACKEND_IMPLEMENTED') return Engine.IS_BACKEND_IMPLEMENTED === true;
+      const fn = Engine[name];
+      return typeof fn === 'function' && !fn.toString().includes('notImplemented(');
+    };
+    const missingExports = REQUIRED_ENGINE_EXPORTS.filter((name) => !isImpl(name));
 
     appRoot.innerHTML = `
       <header class="hud-bar">
@@ -67,13 +70,10 @@ function renderCodexLobby() {
         </div>
         <div class="export-grid">
           ${REQUIRED_ENGINE_EXPORTS.map((name) => {
-            const ok =
-              name === 'IS_BACKEND_IMPLEMENTED'
-                ? Engine.IS_BACKEND_IMPLEMENTED === true
-                : typeof Engine[name] === 'function';
+            const ok = isImpl(name);
             return `<div class="export-pill">
-              <span>${name}</span>
-              <span style="color:${ok ? '#4ade80' : '#fbbf24'};">${ok ? '✓' : '待实现'}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
+              <span style="color:${ok ? '#4ade80' : '#fbbf24'};flex-shrink:0;">${ok ? '✓' : '待实现'}</span>
             </div>`;
           }).join('')}
         </div>
@@ -177,15 +177,17 @@ function bootPlayableGame() {
   appRoot.innerHTML = `
     <header id="hud-bar" class="hud-bar"></header>
     <div class="arena-wrap">
-      <canvas id="arena-canvas" class="arena-canvas" width="404" height="132"></canvas>
-      <div id="arena-overlay-top" class="arena-overlay-top"></div>
+      <canvas id="arena-canvas" class="arena-canvas" width="404" height="122"></canvas>
       <div id="battle-controls" class="battle-controls" hidden>
         <button class="icon-btn active" data-speed="1">1×</button>
         <button class="icon-btn" data-speed="2">2×</button>
         <button class="icon-btn" data-skip="1">跳过结算 ⏭</button>
       </div>
     </div>
-    <div id="relics-strip" class="relics-strip"></div>
+    <div class="stats-relics-bar">
+      <div id="arena-overlay-top" class="stats-group"></div>
+      <div id="relics-strip" class="relics-strip"></div>
+    </div>
     <section class="grid-section">
       <div id="stargrid-board" class="stargrid-board">
         <div class="grid-inner">
@@ -372,7 +374,7 @@ function bootPlayableGame() {
     `;
 
     if (state.relics.length === 0) {
-      relicsStripEl.innerHTML = `<span style="font-size:11px;color:#64748b;">遗物槽：第 2 / 5 / 8 波胜利后解锁三选一强化遗物</span>`;
+      relicsStripEl.innerHTML = `<span style="font-size:10.5px;color:#64748b;">2/5/8波解锁遗物</span>`;
     } else {
       relicsStripEl.innerHTML = state.relics
         .map((id) => {

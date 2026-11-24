@@ -654,7 +654,7 @@ function bootPlayableGame() {
             ${offer.locked ? '🔒' : '🔓'}
           </button>
         </div>
-        ${getItemSvg(offer.itemId, 34)}
+        ${getItemSvg(offer.itemId, 28)}
         <div class="shop-name" style="color:${def.color};">${def.name}</div>
         <div class="shop-cost ${!affordable ? 'lack' : ''}">${offer.sold ? '已售罄' : `💰 ${offer.cost}`}</div>
       `;

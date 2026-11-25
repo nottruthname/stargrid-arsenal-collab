@@ -392,7 +392,8 @@ function bootPlayableGame() {
   }
 
   function renderBattleHudOverlay(tele) {
-    const waveCfg = WAVE_CONFIGS[(state.wave || 1) - 1] || WAVE_CONFIGS[0];
+    const battleWave = arena.report?.wave || state.wave || 1;
+    const waveCfg = WAVE_CONFIGS[battleWave - 1] || WAVE_CONFIGS[0];
     const pPct = Math.max(0, Math.min(100, (tele.playerHp / Math.max(1, tele.playerMaxHp)) * 100));
     const ePct = Math.max(0, Math.min(100, (tele.enemyHp / Math.max(1, tele.enemyMaxHp)) * 100));
     const statusChips = [];
@@ -403,7 +404,7 @@ function bootPlayableGame() {
     battleHudEl.innerHTML = `
       <div class="battle-top-row mono">
         <span class="battle-badge" style="border-color:${waveCfg.accentColor};">
-          W-${String(state.wave).padStart(2, '0')} // ${waveCfg.name}
+          W-${String(battleWave).padStart(2, '0')} // ${waveCfg.name}
         </span>
         <span class="battle-badge" style="color:${tele.simTime >= 18 ? '#f59e0b' : '#22d3ee'};">
           ${tele.simTime >= 18 ? 'STORM ' : ''}${tele.simTime.toFixed(1)}s · KILL ${tele.killCount}/${tele.totalKills}
@@ -653,6 +654,10 @@ function bootPlayableGame() {
         isSelected
       );
 
+      const starCell = info.cells.reduce((best, cur) =>
+        cur[0] < best[0] || (cur[0] === best[0] && cur[1] > best[1]) ? cur : best
+      );
+
       for (const [r, c] of info.cells) {
         const hasUp = cellSet.has(`${r - 1},${c}`);
         const hasDown = cellSet.has(`${r + 1},${c}`);
@@ -691,6 +696,11 @@ function bootPlayableGame() {
         hull.style.borderLeft = hasLeft ? 'none' : `1.5px solid ${borderCol}`;
         hull.style.borderRight = hasRight ? 'none' : `1.5px solid ${borderCol}`;
 
+        if (r === starCell[0] && c === starCell[1]) {
+          hull.style.position = 'relative';
+          hull.innerHTML = `<span class="star-badge">${renderStars(item.level)}</span>`;
+        }
+
         cellTile.appendChild(hull);
         cellTile.addEventListener('pointerdown', (e) => {
           if (isPlayingBattle || state.phase !== 'prep') return;
@@ -718,7 +728,6 @@ function bootPlayableGame() {
 
       overlay.innerHTML = `
         ${getPlacedItemVisualHtml(item.itemId, spanRows, spanCols, item.rotation || 0)}
-        <span class="star-badge">${renderStars(item.level)}</span>
         ${stats?.synergyTags?.length ? '<span class="synergy-dot"></span>' : ''}
       `;
       gridItemsLayerEl.appendChild(overlay);
@@ -1179,6 +1188,10 @@ function bootPlayableGame() {
     const inner = document.createElement('div');
     inner.className = 'drag-ghost-inner';
 
+    const starCell = cells.reduce((best, cur) =>
+      cur[0] < best[0] || (cur[0] === best[0] && cur[1] > best[1]) ? cur : best
+    );
+
     for (const [r, c] of cells) {
       const hasUp = cellSet.has(`${r - 1},${c}`);
       const hasDown = cellSet.has(`${r + 1},${c}`);
@@ -1203,6 +1216,11 @@ function bootPlayableGame() {
       hull.style.borderLeft = hasLeft ? 'none' : `1.5px solid ${pal.border}`;
       hull.style.borderRight = hasRight ? 'none' : `1.5px solid ${pal.border}`;
 
+      if (r === starCell[0] && c === starCell[1]) {
+        hull.style.position = 'relative';
+        hull.innerHTML = `<span class="star-badge">${renderStars(dragInfo.level)}</span>`;
+      }
+
       tile.appendChild(hull);
       inner.appendChild(tile);
     }
@@ -1212,7 +1230,6 @@ function bootPlayableGame() {
     artOverlay.style.inset = '0';
     artOverlay.innerHTML = `
       ${getPlacedItemVisualHtml(dragInfo.itemId, rows, cols, dragInfo.rotation)}
-      <span class="star-badge">${renderStars(dragInfo.level)}</span>
     `;
     inner.appendChild(artOverlay);
 

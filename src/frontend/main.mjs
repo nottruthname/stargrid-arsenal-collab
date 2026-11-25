@@ -472,11 +472,35 @@ function bootPlayableGame() {
   }
 
   function renderRelicsAndOverlay(synergies) {
-    const { summary } = synergies;
+    const raw = synergies.summary || {};
+    let estimatedDps = raw.estimatedDps;
+    let estimatedShieldPerSec = raw.estimatedShieldPerSec;
+    const activeLinkCount =
+      raw.activeLinkCount ?? raw.activeLinks ?? (synergies.links || []).filter((l) => l.active).length;
+
+    if (typeof estimatedDps !== 'number' || typeof estimatedShieldPerSec !== 'number') {
+      let dps = 0;
+      let shieldPerSec = 0;
+      for (const stats of Object.values(synergies.itemStats || {})) {
+        const cd = stats.effectiveCooldownSec || 0;
+        if (cd <= 0) continue;
+        if (stats.effectiveDamage > 0) {
+          const critChance = stats.effectiveCritChance ?? stats.critChance ?? 0;
+          const critMult = stats.critMultiplier ?? 1;
+          dps += (stats.effectiveDamage * (1 + critChance * (critMult - 1))) / cd;
+        }
+        if (stats.effectiveShield > 0) {
+          shieldPerSec += stats.effectiveShield / cd;
+        }
+      }
+      if (typeof estimatedDps !== 'number') estimatedDps = Number(dps.toFixed(1));
+      if (typeof estimatedShieldPerSec !== 'number') estimatedShieldPerSec = Number(shieldPerSec.toFixed(1));
+    }
+
     overlayTopEl.innerHTML = `
-      <span class="stat-chip">⚔️ ${summary.estimatedDps}/s</span>
-      <span class="stat-chip">🛡 ${summary.estimatedShieldPerSec}/s</span>
-      <span class="stat-chip">⚡ ${summary.activeLinkCount}连携</span>
+      <span class="stat-chip">⚔️ ${estimatedDps}/s</span>
+      <span class="stat-chip">🛡 ${estimatedShieldPerSec}/s</span>
+      <span class="stat-chip">⚡ ${activeLinkCount}连携</span>
     `;
 
     if (state.relics.length === 0) {

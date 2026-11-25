@@ -1,8 +1,8 @@
 /**
- * 《星匣：深渊防线》v3.0 战术工业 UI · 物理拖拽碰撞 · 全屏肉鸽虫潮主控制器
- * - 零 Emoji：全部界面使用锋利矢量 SVG 与战术字体
- * - 1:1 实寸多格拖拽幽灵 + 速度倾角物理 + 右键/滚轮/R 空中旋转 + 碰撞震颤回弹
- * - 点击出击后整备界面缩小淡出并彻底隐藏，切换 100% 全屏深渊虫潮战斗剧场
+ * 《星匣：深渊防线》v4.0 商业成品级战术军械交互与战斗总控（100% 纯中文化）
+ * - 零 Emoji、零英文界面标识
+ * - 1:1 真实占格多格机械拼装 + 惯性倾角拖拽 + 右键/滚轮/R 旋转 + 金属碰撞回弹
+ * - 出击后整备界面平滑收起隐藏，无缝切入 100% 全屏 2.5D 虫潮肉鸽战区
  */
 
 import {
@@ -45,6 +45,20 @@ const HULL_PALETTES = {
   nano_medkit: { top: '#133d20', bot: '#071d0e', border: '#4ade80', lip: '#030f07' },
 };
 
+function localizeWaveTitle(title) {
+  return String(title || '')
+    .replace('FINAL BOSS', '终极首领')
+    .replace('BOSS', '深渊首领');
+}
+
+function localizeError(msg) {
+  return String(msg || '操作无效')
+    .replace('out_of_bounds', '超出星匣网格边界')
+    .replace('collision', '装备位置发生碰撞')
+    .replace('max_level', '已达最高星级')
+    .replace('unknown', '未知状态');
+}
+
 function showToast(msg) {
   let root = document.getElementById('toast-root');
   if (!root) {
@@ -52,28 +66,30 @@ function showToast(msg) {
     root.id = 'toast-root';
     document.body.appendChild(root);
   }
-  root.innerHTML = `<div class="toast mono">${msg}</div>`;
+  root.innerHTML = `<div class="toast">${msg}</div>`;
   clearTimeout(showToast._timer);
   showToast._timer = setTimeout(() => {
     if (root) root.innerHTML = '';
   }, 2100);
 }
 
-// 渲染完整多格模块外壳 HTML（共享于 5×5 星匣与 1:1 物理拖拽幽灵）
-function buildPolyominoCellsMarkup(itemId, cells, pal, isSelected = false) {
+function analyzePolyomino(cells) {
   const cellSet = new Set(cells.map(([r, c]) => `${r},${c}`));
   const minR = Math.min(...cells.map(([r]) => r));
   const maxR = Math.max(...cells.map(([r]) => r));
   const minC = Math.min(...cells.map(([, c]) => c));
   const maxC = Math.max(...cells.map(([, c]) => c));
-  const spanRows = maxR - minR + 1;
-  const spanCols = maxC - minC + 1;
-
-  return { minR, minC, spanRows, spanCols, cellSet };
+  return {
+    minR,
+    minC,
+    spanRows: maxR - minR + 1,
+    spanCols: maxC - minC + 1,
+    cellSet,
+  };
 }
 
 // =====================================================================
-// 分支 A：若后端尚未由 Codex 实现，渲染暗黑战术诊断大厅
+// 分支 A：若后端尚未实现，渲染纯中文协作诊断大厅
 // =====================================================================
 function renderCodexLobby() {
   let activeTab = 'status';
@@ -90,30 +106,30 @@ function renderCodexLobby() {
       <div class="prep-workspace">
         <header class="hud-bar">
           <div class="hud-group">
-            <span class="hud-tag mono">${uiIcon('target', 13)} TRACK A // 双AI协作终端</span>
+            <span class="hud-tag">${uiIcon('target', 13)} 双智能体协作终端</span>
           </div>
           <div class="hud-group">
-            <span class="hud-tag credits mono">WAITING CODEX</span>
+            <span class="hud-tag credits">等待后端接入</span>
           </div>
         </header>
 
         <div class="lobby-card">
           <div style="font-size:13px;font-weight:800;color:#22d3ee;">
-            前端战术系统 v3.0 与契约已就绪 (${missingExports.length} 项待提交)
+            前端战术系统与契约已就绪（尚余 ${missingExports.length} 项待提交）
           </div>
           <div class="export-grid">
             ${REQUIRED_ENGINE_EXPORTS.map((name) => {
               const ok = isImpl(name);
               return `<div class="export-pill">
                 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
-                <span style="color:${ok ? '#10b981' : '#f59e0b'};flex-shrink:0;">${ok ? 'OK' : 'PENDING'}</span>
+                <span style="color:${ok ? '#10b981' : '#f59e0b'};flex-shrink:0;">${ok ? '已就绪' : '待实现'}</span>
               </div>`;
             }).join('')}
           </div>
         </div>
 
         <div class="tab-row">
-          <button class="tab-btn ${activeTab === 'status' ? 'active' : ''}" data-tab="status">协作指令</button>
+          <button class="tab-btn ${activeTab === 'status' ? 'active' : ''}" data-tab="status">核心圣物</button>
           <button class="tab-btn ${activeTab === 'items' ? 'active' : ''}" data-tab="items">武装档案</button>
           <button class="tab-btn ${activeTab === 'waves' ? 'active' : ''}" data-tab="waves">虫潮情报</button>
         </div>
@@ -141,7 +157,7 @@ function renderCodexLobby() {
                           <span style="font-size:12px;font-weight:800;color:${item.color};">
                             ${item.name} · ${CATEGORY_META[item.category].label}
                           </span>
-                          <span class="mono" style="font-size:11px;color:#f59e0b;">${item.cost} CR</span>
+                          <span style="font-size:11px;color:#f59e0b;">${item.cost} 金币</span>
                         </div>
                         <div style="font-size:11px;color:#cbd5e1;margin-top:2px;">${item.description}</div>
                         <div style="font-size:11px;color:#f59e0b;margin-top:2px;">连携：${item.synergyDesc}</div>
@@ -150,13 +166,13 @@ function renderCodexLobby() {
                   }).join('')
                 : WAVE_CONFIGS.map(
                     (w) => `<div class="codex-item-row">
-                      <div class="mono" style="min-width:46px;font-size:11px;font-weight:800;color:${w.accentColor};">
-                        W-${String(w.wave).padStart(2, '0')}${w.isBoss ? '<br/>BOSS' : ''}
+                      <div style="min-width:54px;font-size:11px;font-weight:800;color:${w.accentColor};">
+                        第 ${w.wave} 波${w.isBoss ? '<br/>首领' : ''}
                       </div>
                       <div style="flex:1;">
                         <div style="font-size:12px;font-weight:800;">${w.name}</div>
-                        <div class="mono" style="font-size:10.5px;color:#cbd5e1;">
-                          HP ${w.maxHp} · SHD ${w.initialShield} · ATK ${w.attack}/${w.cooldownSec}s
+                        <div style="font-size:10.5px;color:#cbd5e1;">
+                          生命 ${w.maxHp} · 护甲 ${w.initialShield} · 攻击 ${w.attack}（每 ${w.cooldownSec} 秒）
                         </div>
                         <div style="font-size:11px;color:#7e90ad;">${w.traitDesc}</div>
                       </div>
@@ -179,7 +195,7 @@ function renderCodexLobby() {
 }
 
 // =====================================================================
-// 分支 B：完整可玩游戏（封面 -> 整备工坊 -> 全屏肉鸽虫潮战斗）
+// 分支 B：完整可玩游戏（商业主视觉封面 -> 军械工坊 -> 全屏虫潮战斗）
 // =====================================================================
 function renderCodexModalHtml() {
   return `
@@ -187,12 +203,12 @@ function renderCodexModalHtml() {
       <div class="modal-card">
         <h2 class="modal-title">
           <span style="display:inline-flex;align-items:center;gap:6px;">${uiIcon('codex', 16)} 军械库武装档案</span>
-          <button class="icon-btn" id="close-codex">ESC</button>
+          <button class="icon-btn" id="close-codex">关闭</button>
         </h2>
-        <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">
-          • 将多格模块拖入 <b>5×5 装甲星匣</b>，拖拽中按 <b>右键 / R / 滚轮</b> 可空中旋转。<br/>
-          • 同装备同星级叠放触发 <b>二合一超载升星</b>（最高 3 星）；正交贴合激活能量连携。<br/>
-          • 锁定配置出击后，界面自动收起进入 <b>全屏虫潮生存战</b>（可按住屏幕牵引走位）。
+        <div style="font-size:11.5px;color:#94a3b8;line-height:1.6;">
+          • 将多格武装拖入 <b>5×5 装甲星匣</b>，拖拽途中按 <b>右键 / 滚轮 / 键盘旋转键</b> 即可调整朝向。<br/>
+          • 同名同星级装备叠放可触发 <b>二合一超载升星</b>（最高三星）；正交贴合自动激活能量连携。<br/>
+          • 点击解锁舱门出击后，面板收起并进入 <b>全屏虫潮生存战</b>（按住屏幕拖动即可手动牵引走位）。
         </div>
         ${ITEM_IDS.map((id) => {
           const item = ITEM_CATALOG[id];
@@ -200,8 +216,8 @@ function renderCodexModalHtml() {
             <div>${getItemSvg(id, 38)}</div>
             <div style="flex:1;">
               <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:${item.color};">
-                <span>${item.name} (${RARITY_META[item.rarity].label})</span>
-                <span class="mono" style="color:#f59e0b;">${item.cost} CR</span>
+                <span>${item.name}（${RARITY_META[item.rarity].label}）</span>
+                <span style="color:#f59e0b;">${item.cost} 金币</span>
               </div>
               <div style="font-size:11px;color:#94a3b8;margin-top:2px;">${item.description}</div>
               <div style="font-size:11px;color:#f59e0b;margin-top:2px;">连携：${item.synergyDesc}</div>
@@ -217,40 +233,32 @@ function showSplashScreen(onStart) {
   appRoot.innerHTML = `
     <section class="splash-screen">
       <div class="splash-header">
-        <span class="splash-code mono">${uiIcon('target', 12)} STARGRID // ABYSSAL PROTOCOL</span>
+        <span class="splash-code">${uiIcon('target', 12)} 深渊防线 · 机动军械指挥部</span>
         <h1 class="splash-title">星匣：深渊防线</h1>
-        <p class="splash-sub mono">TACTICAL RIG ASSEMBLY · SWARM SURVIVAL</p>
+        <p class="splash-sub">异形武装拼装 · 绝境虫潮割草</p>
       </div>
 
-      <div class="splash-radar" aria-hidden="true">
-        <div class="radar-ring"></div>
-        <div class="radar-ring r2"></div>
-        <div class="radar-ring r3"></div>
-        <div class="radar-sweep"></div>
-        ${getItemSvg('rail_rifle', 78)}
-      </div>
-
-      <div style="z-index:2;">
+      <div class="splash-bottom">
         <div class="splash-specs">
           <div class="spec-cell">
-            <div class="spec-cell-top mono">01 // MATRIX</div>
-            <div class="spec-cell-sub">5×5 异形拼装</div>
+            <div class="spec-cell-top">五星匣拼装</div>
+            <div class="spec-cell-sub">多格旋转嵌入</div>
           </div>
           <div class="spec-cell">
-            <div class="spec-cell-top mono">02 // OVERCLOCK</div>
-            <div class="spec-cell-sub">二合一升星连携</div>
+            <div class="spec-cell-top">超载二合一</div>
+            <div class="spec-cell-sub">同阶合成升星</div>
           </div>
           <div class="spec-cell">
-            <div class="spec-cell-top mono">03 // SWARM</div>
-            <div class="spec-cell-sub">全屏虫潮肉鸽</div>
+            <div class="spec-cell-top">全屏虫潮战</div>
+            <div class="spec-cell-sub">手自一体走位</div>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;">
           <button id="btn-start-game" class="tactical-btn">
-            ${uiIcon('engage', 15)} INITIALIZE // 接入深渊防线
+            ${uiIcon('engage', 15)} 启动星匣 · 出击迎战
           </button>
           <button id="btn-splash-codex" class="tactical-btn secondary">
-            ${uiIcon('codex', 14)} CODEX // 查阅军械档案
+            ${uiIcon('codex', 14)} 军械图鉴
           </button>
         </div>
       </div>
@@ -294,16 +302,23 @@ function bootPlayableGame() {
       <div id="threat-scanner" class="threat-scanner"></div>
       <div id="relics-strip" class="relics-strip"></div>
       <section class="grid-section">
-        <div id="stargrid-board" class="stargrid-board">
-          <div class="grid-inner">
-            <div id="grid-cells-bg" class="grid-cells-bg"></div>
-            <svg id="synergy-svg" class="synergy-svg" viewBox="0 0 100 100"></svg>
-            <div id="grid-items-layer" class="grid-items-layer"></div>
+        <div class="stargrid-chassis">
+          <div class="chassis-header">
+            <span class="chassis-label"><span class="chassis-led"></span> 装甲星匣</span>
+            <span class="hazard-bar"></span>
+            <span class="chassis-rivets"><span class="rivet"></span><span class="rivet"></span><span class="rivet"></span></span>
+          </div>
+          <div id="stargrid-board" class="stargrid-board">
+            <div class="grid-inner">
+              <div id="grid-cells-bg" class="grid-cells-bg"></div>
+              <svg id="synergy-svg" class="synergy-svg" viewBox="0 0 100 100"></svg>
+              <div id="grid-items-layer" class="grid-items-layer"></div>
+            </div>
           </div>
         </div>
       </section>
       <div id="inspector-bar" class="inspector-bar"></div>
-      <div id="stash-bar" class="stash-bar" aria-label="模块暂存架"></div>
+      <div id="stash-bar" class="stash-bar" aria-label="模块备舱"></div>
       <section id="shop-section" class="shop-section"></section>
       <button id="battle-cta" class="tactical-btn"></button>
     </div>
@@ -314,9 +329,9 @@ function bootPlayableGame() {
       <div class="battle-bottom-overlay">
         <div id="battle-deck-strip" class="battle-deck-strip"></div>
         <div id="battle-controls" class="battle-controls">
-          <button class="icon-btn active mono" data-speed="1">1X</button>
-          <button class="icon-btn mono" data-speed="2">2X</button>
-          <button class="icon-btn mono" data-skip="1">SKIP</button>
+          <button class="icon-btn active" data-speed="1">常速</button>
+          <button class="icon-btn" data-speed="2">二倍速</button>
+          <button class="icon-btn" data-skip="1">跳过</button>
         </div>
       </div>
     </div>
@@ -344,7 +359,6 @@ function bootPlayableGame() {
   const battleCtaEl = document.getElementById('battle-cta');
   const modalRootEl = document.getElementById('modal-root');
 
-  const COL_LABELS = ['A', 'B', 'C', 'D', 'E'];
   const cellElements = [];
   for (let r = 0; r < GRID_ROWS; r++) {
     for (let c = 0; c < GRID_COLS; c++) {
@@ -352,7 +366,7 @@ function bootPlayableGame() {
       slot.className = 'grid-cell-slot';
       slot.dataset.row = String(r);
       slot.dataset.col = String(c);
-      slot.innerHTML = `<div class="grid-cell-socket"><span class="grid-coord mono">${COL_LABELS[c]}${r + 1}</span></div>`;
+      slot.innerHTML = '<div class="grid-cell-socket"></div>';
       slot.addEventListener('click', () => {
         if (isPlayingBattle || state.phase !== 'prep' || !selectedRef) return;
         const item = findItemByInstanceId(selectedRef.instanceId);
@@ -374,7 +388,7 @@ function bootPlayableGame() {
           const nextLvSum = state.placedItems.reduce((a, b) => a + b.level, 0);
           if (state.placedItems.length <= prevPlaced && nextLvSum > prevLvSum) {
             sfx.playMerge();
-            showToast('UPGRADE // 模块二合一超载升星');
+            showToast('模块二合一超载升星完成');
           } else {
             sfx.playLockIn();
           }
@@ -383,7 +397,7 @@ function bootPlayableGame() {
           renderAll();
         } catch (err) {
           sfx.playClang();
-          showToast(err.message);
+          showToast(localizeError(err.message));
         }
       });
       gridCellsBgEl.appendChild(slot);
@@ -397,33 +411,33 @@ function bootPlayableGame() {
     const pPct = Math.max(0, Math.min(100, (tele.playerHp / Math.max(1, tele.playerMaxHp)) * 100));
     const ePct = Math.max(0, Math.min(100, (tele.enemyHp / Math.max(1, tele.enemyMaxHp)) * 100));
     const statusChips = [];
-    if (tele.enemyBurn > 0) statusChips.push(`BURN ${tele.enemyBurn}`);
-    if (tele.enemyShock > 0) statusChips.push(`SHOCK ${tele.enemyShock}`);
-    if (tele.enemyChill > 0) statusChips.push(`CHILL ${tele.enemyChill}`);
+    if (tele.enemyBurn > 0) statusChips.push(`灼烧 ${tele.enemyBurn}层`);
+    if (tele.enemyShock > 0) statusChips.push(`感电 ${tele.enemyShock}层`);
+    if (tele.enemyChill > 0) statusChips.push(`霜缓 ${tele.enemyChill}层`);
 
     battleHudEl.innerHTML = `
-      <div class="battle-top-row mono">
+      <div class="battle-top-row num-tabular">
         <span class="battle-badge" style="border-color:${waveCfg.accentColor};">
-          W-${String(battleWave).padStart(2, '0')} // ${waveCfg.name}
+          第 ${battleWave} 波 · ${waveCfg.name}
         </span>
         <span class="battle-badge" style="color:${tele.simTime >= 18 ? '#f59e0b' : '#22d3ee'};">
-          ${tele.simTime >= 18 ? 'STORM ' : ''}${tele.simTime.toFixed(1)}s · KILL ${tele.killCount}/${tele.totalKills}
+          ${tele.simTime >= 18 ? '星渊风暴 ' : '用时 '}${tele.simTime.toFixed(1)}秒 · 歼敌 ${tele.killCount}/${tele.totalKills}
         </span>
       </div>
-      <div class="battle-bars mono">
+      <div class="battle-bars num-tabular">
         <div class="bar-box">
           <div class="bar-label" style="color:#22d3ee;">
-            <span>RIG HP</span>
-            <span>${tele.playerHp}/${tele.playerMaxHp}${tele.playerShield > 0 ? ` +${tele.playerShield}S` : ''}</span>
+            <span>重装机甲</span>
+            <span>${tele.playerHp}/${tele.playerMaxHp}${tele.playerShield > 0 ? ` +${tele.playerShield}盾` : ''}</span>
           </div>
           <div class="bar-track">
-            <div class="bar-fill" style="width:${pPct}%;background:#10b981;"></div>
+            <div class="bar-fill" style="width:${pPct}%;background:linear-gradient(90deg,#059669,#34d399);"></div>
           </div>
         </div>
         <div class="bar-box">
           <div class="bar-label" style="color:${waveCfg.accentColor};">
-            <span>SWARM POOL</span>
-            <span>${tele.enemyHp}/${tele.enemyMaxHp}${tele.enemyShield > 0 ? ` +${tele.enemyShield}S` : ''}</span>
+            <span>深渊虫潮</span>
+            <span>${tele.enemyHp}/${tele.enemyMaxHp}${tele.enemyShield > 0 ? ` +${tele.enemyShield}盾` : ''}</span>
           </div>
           <div class="bar-track">
             <div class="bar-fill" style="width:${ePct}%;background:${waveCfg.accentColor};"></div>
@@ -432,8 +446,8 @@ function bootPlayableGame() {
       </div>
       ${
         statusChips.length
-          ? `<div class="mono" style="text-align:right;font-size:10px;color:#fbbf24;">${statusChips.join(' // ')}</div>`
-          : `<div class="battle-hint mono">DRAG ARENA TO STEER RIG // 按住屏幕可手动牵引机甲走位</div>`
+          ? `<div style="text-align:right;font-size:10.5px;font-weight:800;color:#fbbf24;text-shadow:0 1px 4px #000;">${statusChips.join(' · ')}</div>`
+          : `<div class="battle-hint">按住屏幕拖动，可手动牵引机甲走位</div>`
       }
     `;
   }
@@ -550,16 +564,16 @@ function bootPlayableGame() {
 
     hudEl.innerHTML = `
       <div class="hud-group">
-        <span class="hud-tag mono ${waveCfg.isBoss ? 'boss' : ''}">
-          W-${String(state.wave).padStart(2, '0')}/${MAX_WAVES}${waveCfg.isBoss ? ' BOSS' : ''}
+        <span class="hud-tag num-tabular ${waveCfg.isBoss ? 'boss' : ''}">
+          第 ${state.wave}/${MAX_WAVES} 波${waveCfg.isBoss ? ' · 首领' : ''}
         </span>
-        <span class="hud-tag credits mono">${uiIcon('credits', 12)} ${state.gold} CR</span>
+        <span class="hud-tag credits num-tabular">${uiIcon('credits', 12)} ${state.gold} 金币</span>
         <span class="integrity-pips" title="防线完整度">${pips}</span>
       </div>
       <div class="hud-group">
-        <button class="icon-btn mono" id="btn-codex">${uiIcon('codex', 12)} 档案</button>
+        <button class="icon-btn" id="btn-codex">${uiIcon('codex', 12)} 图鉴</button>
         <button class="icon-btn" id="btn-mute" title="音效开关">${uiIcon(sfx.muted ? 'audioOff' : 'audioOn', 13)}</button>
-        <button class="icon-btn" id="btn-restart" title="重开">${uiIcon('reset', 13)}</button>
+        <button class="icon-btn" id="btn-restart" title="重新开始">${uiIcon('reset', 13)}</button>
       </div>
     `;
     document.getElementById('btn-codex').addEventListener('click', () => {
@@ -576,7 +590,7 @@ function bootPlayableGame() {
       selectedRef = null;
       showBattleSummaryModal = false;
       renderAll();
-      showToast('SYSTEM RESET // 已重建深渊防线');
+      showToast('已重置深渊防线部署');
     });
   }
 
@@ -590,21 +604,21 @@ function bootPlayableGame() {
         <div class="threat-title">
           <span style="color:${waveCfg.accentColor};">${uiIcon('skull', 13)}</span>
           <span>${waveCfg.name}</span>
-          <span class="mono" style="font-size:9.5px;color:#7e90ad;">[${waveCfg.title}]</span>
+          <span style="font-size:9.5px;color:#8496b5;">[${localizeWaveTitle(waveCfg.title)}]</span>
         </div>
-        <div class="threat-sub mono">
-          虫群总量 HP ${waveCfg.maxHp} · 甲 ${waveCfg.initialShield} · 攻 ${waveCfg.attack}/${waveCfg.cooldownSec}s
+        <div class="threat-sub num-tabular">
+          生命 ${waveCfg.maxHp} · 护甲 ${waveCfg.initialShield} · 攻击 ${waveCfg.attack}（${waveCfg.cooldownSec}秒）
         </div>
       </div>
-      <div class="telemetry-right mono">
-        <span class="tele-chip">${uiIcon('dps', 11)} ${estimatedDps}/s</span>
-        <span class="tele-chip shd">${uiIcon('shield', 11)} ${estimatedShieldPerSec}/s</span>
-        <span class="tele-chip link">${uiIcon('bolt', 11)} ${activeLinkCount}</span>
+      <div class="telemetry-right num-tabular">
+        <span class="tele-chip">${uiIcon('dps', 11)} 秒伤 ${estimatedDps}</span>
+        <span class="tele-chip shd">${uiIcon('shield', 11)} ${estimatedShieldPerSec}/秒</span>
+        <span class="tele-chip link">${uiIcon('bolt', 11)} ${activeLinkCount}连携</span>
       </div>
     `;
 
     if (state.relics.length === 0) {
-      relicsStripEl.innerHTML = `<span class="mono" style="font-size:10px;color:#52637d;">RELIC SLOTS // 第 2 / 5 / 8 波击破虫巢解锁协议遗物</span>`;
+      relicsStripEl.innerHTML = `<span style="font-size:10px;color:#5a6c8c;">核心圣物槽：第 2 / 5 / 8 波击破虫巢解锁</span>`;
     } else {
       relicsStripEl.innerHTML = state.relics
         .map((id) => {
@@ -629,7 +643,10 @@ function bootPlayableGame() {
         const a = centroids.get(link.fromInstanceId);
         const b = centroids.get(link.toInstanceId);
         if (!a || !b) return '';
-        return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="synergy-line" />`;
+        return `
+          <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="synergy-line-glow" />
+          <line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="synergy-line" />
+        `;
       })
       .join('');
 
@@ -647,15 +664,13 @@ function bootPlayableGame() {
       const isSelected = selectedRef?.instanceId === item.instanceId;
       const isSlammed = slamTargetId === item.instanceId;
       const isJolted = slamNeighborIds.has(item.instanceId);
-      const { minR, minC, spanRows, spanCols, cellSet } = buildPolyominoCellsMarkup(
-        item.itemId,
-        info.cells,
-        pal,
-        isSelected
-      );
+      const { minR, minC, spanRows, spanCols, cellSet } = analyzePolyomino(info.cells);
 
       const starCell = info.cells.reduce((best, cur) =>
         cur[0] < best[0] || (cur[0] === best[0] && cur[1] > best[1]) ? cur : best
+      );
+      const synCell = info.cells.reduce((best, cur) =>
+        cur[0] > best[0] || (cur[0] === best[0] && cur[1] < best[1]) ? cur : best
       );
 
       for (const [r, c] of info.cells) {
@@ -664,10 +679,10 @@ function bootPlayableGame() {
         const hasLeft = cellSet.has(`${r},${c - 1}`);
         const hasRight = cellSet.has(`${r},${c + 1}`);
 
-        const padT = hasUp ? '0px' : '2.5px';
-        const padB = hasDown ? '0px' : '2.5px';
-        const padL = hasLeft ? '0px' : '2.5px';
-        const padR = hasRight ? '0px' : '2.5px';
+        const padT = hasUp ? '0px' : '2px';
+        const padB = hasDown ? '0px' : '2px';
+        const padL = hasLeft ? '0px' : '2px';
+        const padR = hasRight ? '0px' : '2px';
 
         const rTL = !hasUp && !hasLeft ? '6px' : '0px';
         const rTR = !hasUp && !hasRight ? '6px' : '0px';
@@ -675,7 +690,7 @@ function bootPlayableGame() {
         const rBR = !hasDown && !hasRight ? '6px' : '0px';
 
         const cellTile = document.createElement('div');
-        cellTile.className = `grid-piece-cell${isSelected ? ' selected' : ''}${isSlammed ? ' just-slammed' : ''}${isJolted ? ' neighbor-jolt' : ''}`;
+        cellTile.className = `grid-piece-cell tier-${item.level}${isSelected ? ' selected' : ''}${isSlammed ? ' just-slammed' : ''}${isJolted ? ' neighbor-jolt' : ''}`;
         cellTile.dataset.instanceId = item.instanceId;
         cellTile.style.left = `${c * 20}%`;
         cellTile.style.top = `${r * 20}%`;
@@ -689,17 +704,22 @@ function bootPlayableGame() {
         const hull = document.createElement('div');
         hull.className = 'grid-piece-hull';
         hull.style.borderRadius = `${rTL} ${rTR} ${rBR} ${rBL}`;
-        const borderCol = isSelected ? '#f8fafc' : pal.border;
+        const tierRim = item.level >= 3 ? '#fbbf24' : item.level === 2 ? '#e2e8f0' : pal.border;
+        const borderCol = isSelected ? '#ffffff' : tierRim;
         const lipCol = isSelected ? '#bae6fd' : pal.lip;
         hull.style.borderTop = hasUp ? 'none' : `1.5px solid ${borderCol}`;
         hull.style.borderBottom = hasDown ? 'none' : `3px solid ${lipCol}`;
         hull.style.borderLeft = hasLeft ? 'none' : `1.5px solid ${borderCol}`;
         hull.style.borderRight = hasRight ? 'none' : `1.5px solid ${borderCol}`;
 
+        let cellBadges = '';
         if (r === starCell[0] && c === starCell[1]) {
-          hull.style.position = 'relative';
-          hull.innerHTML = `<span class="star-badge">${renderStars(item.level)}</span>`;
+          cellBadges += `<span class="star-badge">${renderStars(item.level)}</span>`;
         }
+        if (stats?.synergyTags?.length && r === synCell[0] && c === synCell[1]) {
+          cellBadges += '<span class="synergy-dot"></span>';
+        }
+        if (cellBadges) hull.innerHTML = cellBadges;
 
         cellTile.appendChild(hull);
         cellTile.addEventListener('pointerdown', (e) => {
@@ -725,11 +745,7 @@ function bootPlayableGame() {
       overlay.style.top = `${minR * 20}%`;
       overlay.style.width = `${spanCols * 20}%`;
       overlay.style.height = `${spanRows * 20}%`;
-
-      overlay.innerHTML = `
-        ${getPlacedItemVisualHtml(item.itemId, spanRows, spanCols, item.rotation || 0)}
-        ${stats?.synergyTags?.length ? '<span class="synergy-dot"></span>' : ''}
-      `;
+      overlay.innerHTML = getPlacedItemVisualHtml(item.itemId, spanRows, spanCols, item.rotation || 0);
       gridItemsLayerEl.appendChild(overlay);
     }
   }
@@ -739,7 +755,7 @@ function bootPlayableGame() {
     if (!selected) {
       inspectorBarEl.innerHTML = `
         <div class="inspector-info">
-          <div class="inspector-title mono" style="color:#94a3b8;">${uiIcon('target', 12)} 拖拽模块以 1:1 实寸拼装 · 拖拽中 [右键 / R / 滚轮] 空中旋转</div>
+          <div class="inspector-title" style="color:#94a3b8;">${uiIcon('target', 12)} 拖拽模块按真实占格拼装 · 拖拽中 [右键 / 滚轮] 旋转</div>
           <div class="inspector-sub">同装备同星级叠放二合一超载升星，正交相邻自动建立连携线路。</div>
         </div>
       `;
@@ -754,10 +770,10 @@ function bootPlayableGame() {
     let statText = def.synergyDesc;
     if (stats) {
       const parts = [];
-      if (stats.effectiveDamage > 0) parts.push(`DMG ${stats.effectiveDamage}`);
-      if (stats.effectiveShield > 0) parts.push(`SHD ${stats.effectiveShield}`);
-      if (stats.effectiveHeal > 0) parts.push(`HEAL ${stats.effectiveHeal}`);
-      if (stats.effectiveCooldownSec > 0) parts.push(`CD ${stats.effectiveCooldownSec}s`);
+      if (stats.effectiveDamage > 0) parts.push(`伤害 ${stats.effectiveDamage}`);
+      if (stats.effectiveShield > 0) parts.push(`护盾 ${stats.effectiveShield}`);
+      if (stats.effectiveHeal > 0) parts.push(`治疗 ${stats.effectiveHeal}`);
+      if (stats.effectiveCooldownSec > 0) parts.push(`冷却 ${stats.effectiveCooldownSec}秒`);
       if (stats.synergyTags.length > 0) parts.push(stats.synergyTags.join(' · '));
       statText = parts.join(' | ') || def.description;
     }
@@ -767,18 +783,18 @@ function bootPlayableGame() {
         <div class="inspector-title" style="color:${def.color};">
           <span>${def.name}</span>
           ${renderStars(selected.level)}
-          <span class="mono" style="font-size:9.5px;color:#7e90ad;">${inGrid ? '[ARMED]' : '[STASH]'}</span>
+          <span style="font-size:9.5px;color:#8496b5;">${inGrid ? '【已装填】' : '【备舱】'}</span>
         </div>
-        <div class="inspector-sub mono" title="${statText}">${statText}</div>
+        <div class="inspector-sub num-tabular" title="${statText}">${statText}</div>
       </div>
       <div class="inspector-actions">
-        <button class="action-mini-btn mono" id="btn-rotate">${uiIcon('rotate', 11)} 旋转</button>
+        <button class="action-mini-btn" id="btn-rotate">${uiIcon('rotate', 11)} 旋转</button>
         ${
           inGrid
-            ? `<button class="action-mini-btn mono" id="btn-to-stash">暂存</button>`
-            : `<button class="action-mini-btn mono" id="btn-auto-place">上阵</button>`
+            ? `<button class="action-mini-btn" id="btn-to-stash">卸下</button>`
+            : `<button class="action-mini-btn" id="btn-auto-place">装填</button>`
         }
-        <button class="action-mini-btn sell mono" id="btn-sell">+${sellPrice} CR</button>
+        <button class="action-mini-btn sell num-tabular" id="btn-sell">+${sellPrice} 金币</button>
       </div>
     `;
 
@@ -791,7 +807,7 @@ function bootPlayableGame() {
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     });
 
@@ -803,7 +819,7 @@ function bootPlayableGame() {
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     });
 
@@ -826,7 +842,7 @@ function bootPlayableGame() {
         });
         if (target.isMerge || state.placedItems.length === beforeLen) {
           sfx.playMerge();
-          showToast('UPGRADE // 自动部署并完成升星');
+          showToast('已自动装填并完成升星');
         } else {
           sfx.playLockIn();
         }
@@ -835,7 +851,7 @@ function bootPlayableGame() {
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     });
 
@@ -845,11 +861,11 @@ function bootPlayableGame() {
         state = Engine.sellItem(state, selected.instanceId);
         selectedRef = null;
         sfx.playSell();
-        showToast(`SALVAGE // 回收模块 +${sellPrice} CR`);
+        showToast(`已回收装备，获得 +${sellPrice} 金币`);
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     });
   }
@@ -884,7 +900,7 @@ function bootPlayableGame() {
         });
       } else {
         slot.className = 'stash-slot';
-        slot.innerHTML = `<span class="mono" style="font-size:9px;color:#3d4d6b;">S-0${i + 1}</span>`;
+        slot.innerHTML = '<span class="stash-empty-mark">备舱</span>';
       }
       stashBarEl.appendChild(slot);
     }
@@ -895,10 +911,10 @@ function bootPlayableGame() {
     shopSectionEl.innerHTML = `
       <div class="shop-header">
         <span style="display:inline-flex;align-items:center;gap:5px;">
-          ${uiIcon('stash', 13)} 军械补给站 <span class="mono" style="font-size:9.5px;color:#7e90ad;">[点击入舱 / 拖入星匣]</span>
+          ${uiIcon('stash', 13)} 军械补给站 <span style="font-size:10px;color:#8496b5;">（点击入舱 / 拖入星匣）</span>
         </span>
-        <button class="action-mini-btn mono" id="btn-refresh" ${canRefresh ? '' : 'disabled'}>
-          ${uiIcon('refresh', 11)} REROLL ${state.refreshCost} CR
+        <button class="action-mini-btn num-tabular" id="btn-refresh" ${canRefresh ? '' : 'disabled'}>
+          ${uiIcon('refresh', 11)} 刷新补给 · ${state.refreshCost} 金币
         </button>
       </div>
       <div class="shop-cards" id="shop-cards"></div>
@@ -912,13 +928,14 @@ function bootPlayableGame() {
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     });
 
     const cardsEl = document.getElementById('shop-cards');
     state.shopOffers.forEach((offer, idx) => {
       const def = ITEM_CATALOG[offer.itemId];
+      const rar = RARITY_META[def.rarity];
       const affordable = state.gold >= offer.cost;
       const card = document.createElement('div');
       card.className = `shop-card${offer.sold ? ' sold' : ''}${!affordable ? ' unaffordable' : ''}`;
@@ -926,14 +943,17 @@ function bootPlayableGame() {
       card.dataset.slotIndex = String(idx);
       card.innerHTML = `
         <div class="shop-card-top">
-          ${getMiniShapeSvg(def.baseCells, 0, def.color)}
+          <span class="shop-top-left">
+            ${getMiniShapeSvg(def.baseCells, 0, def.color)}
+            <span class="rarity-tag" style="color:${rar.color};">${rar.label}</span>
+          </span>
           <button class="lock-btn ${offer.locked ? 'locked' : ''}" data-lock="${idx}" title="锁定到下一波">
             ${uiIcon(offer.locked ? 'lock' : 'unlock', 10)}
           </button>
         </div>
-        ${getItemSvg(offer.itemId, 34)}
+        <div class="shop-pedestal">${getItemSvg(offer.itemId, 38)}</div>
         <div class="shop-name" style="color:${def.color};">${def.name}</div>
-        <div class="shop-cost mono ${!affordable ? 'lack' : ''}">${offer.sold ? 'SOLD' : `${offer.cost} CR`}</div>
+        <div class="shop-cost num-tabular ${!affordable ? 'lack' : ''}">${offer.sold ? '已售罄' : `${offer.cost} 金币`}</div>
       `;
 
       const lockBtn = card.querySelector('.lock-btn');
@@ -968,14 +988,14 @@ function bootPlayableGame() {
 
   function renderBattleCta() {
     if (state.phase === 'relic_draft') {
-      battleCtaEl.innerHTML = `${uiIcon('bolt', 14)} PROTOCOL DRAFT // 请抽取 1 件遗物`;
+      battleCtaEl.innerHTML = `${uiIcon('bolt', 14)} 开启战利品圣物匣`;
     } else if (state.phase === 'victory') {
-      battleCtaEl.innerHTML = `${uiIcon('trophy', 14)} MISSION COMPLETE // 查看通关战报`;
+      battleCtaEl.innerHTML = `${uiIcon('trophy', 14)} 查看通关战报`;
     } else if (state.phase === 'gameover') {
-      battleCtaEl.innerHTML = `${uiIcon('skull', 14)} RIG DESTROYED // 查看终局战报`;
+      battleCtaEl.innerHTML = `${uiIcon('skull', 14)} 查看终局战报`;
     } else {
       const waveCfg = WAVE_CONFIGS[state.wave - 1];
-      battleCtaEl.innerHTML = `${uiIcon('engage', 13)} ENGAGE // 锁定出击 · W-${String(state.wave).padStart(2, '0')} (${waveCfg.name})`;
+      battleCtaEl.innerHTML = `${uiIcon('engage', 13)} 舱门解锁 · 迎战第 ${state.wave} 波（${waveCfg.name}）`;
     }
     battleCtaEl.disabled = isPlayingBattle;
   }
@@ -1026,7 +1046,7 @@ function bootPlayableGame() {
         enterFullBattleMode(state.lastBattleReport, snapshotBefore);
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     } else {
       showBattleSummaryModal = true;
@@ -1053,25 +1073,25 @@ function bootPlayableGame() {
     if (showBattleSummaryModal && state.lastBattleReport) {
       const rep = state.lastBattleReport;
       const maxVal = Math.max(1, ...rep.contributions.map((c) => c.damage + c.shield + c.healing));
-      let ctaLabel = `NEXT WAVE // 进入第 ${state.wave} 波整备`;
-      if (state.phase === 'relic_draft') ctaLabel = 'PROTOCOL DRAFT // 抽取战利品遗物';
-      else if (state.phase === 'victory') ctaLabel = 'SECTOR CLEARED // 重启新防线';
-      else if (state.phase === 'gameover') ctaLabel = 'REBOOT RIG // 重新部署挑战';
+      let ctaLabel = `进入第 ${state.wave} 波整备`;
+      if (state.phase === 'relic_draft') ctaLabel = '开启战利品圣物三选一';
+      else if (state.phase === 'victory') ctaLabel = '防线全通 · 重开新一轮挑战';
+      else if (state.phase === 'gameover') ctaLabel = '防线陷落 · 重新部署挑战';
 
       modalRootEl.innerHTML = `
         <div class="modal-backdrop">
           <div class="modal-card">
             <h2 class="modal-title" style="color:${rep.won ? '#10b981' : '#f43f5e'};">
-              <span>${rep.won ? `波次 W-${String(rep.wave).padStart(2, '0')} 虫潮清除` : `防线失守 (-1 完整度)`}</span>
-              <span class="mono" style="font-size:11px;color:#7e90ad;">${rep.durationSec.toFixed(1)}s</span>
+              <span>${rep.won ? `第 ${rep.wave} 波 · 虫潮肃清` : '防线失守（完整度 -1）'}</span>
+              <span style="font-size:11px;color:#8496b5;">用时 ${rep.durationSec.toFixed(1)} 秒</span>
             </h2>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;" class="mono">
-              <span class="hud-tag credits">+${rep.goldEarned} CR${rep.interestEarned ? ` (+${rep.interestEarned} 利息)` : ''}</span>
-              <span class="hud-tag">总输出 ${rep.totalDamageDealt}</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;" class="num-tabular">
+              <span class="hud-tag credits">+${rep.goldEarned} 金币${rep.interestEarned ? `（含利息 +${rep.interestEarned}）` : ''}</span>
+              <span class="hud-tag">总伤害 ${rep.totalDamageDealt}</span>
               <span class="hud-tag">总护盾 ${rep.totalShieldGained}</span>
             </div>
             <div style="display:flex;flex-direction:column;gap:7px;">
-              <div class="mono" style="font-size:11px;font-weight:800;color:#94a3b8;">COMBAT TELEMETRY // 武装贡献结算</div>
+              <div style="font-size:11.5px;font-weight:800;color:#94a3b8;">武装战绩统计</div>
               ${
                 rep.contributions.length === 0
                   ? '<div style="font-size:12px;color:#52637d;">本波次未部署主动武装</div>'
@@ -1079,10 +1099,10 @@ function bootPlayableGame() {
                       .map((c) => {
                         const score = c.damage + c.shield + c.healing;
                         const pct = Math.round((score / maxVal) * 100);
-                        return `<div class="contrib-row">
+                        return `<div class="contrib-row num-tabular">
                           <div style="display:flex;justify-content:space-between;align-items:center;">
                             <span style="color:${c.color};font-weight:800;display:inline-flex;align-items:center;gap:4px;">${c.name} ${renderStars(c.level)}</span>
-                            <span class="mono" style="color:#cbd5e1;font-size:10.5px;">DMG ${c.damage} · SHD ${c.shield}${c.healing ? ` · HEAL ${c.healing}` : ''}</span>
+                            <span style="color:#cbd5e1;font-size:10.5px;">伤害 ${c.damage} · 护盾 ${c.shield}${c.healing ? ` · 治疗 ${c.healing}` : ''}</span>
                           </div>
                           <div class="contrib-bar-bg">
                             <div class="contrib-bar-fill" style="width:${pct}%;background:${c.color};"></div>
@@ -1111,8 +1131,8 @@ function bootPlayableGame() {
       modalRootEl.innerHTML = `
         <div class="modal-backdrop">
           <div class="modal-card">
-            <h2 class="modal-title" style="color:#f59e0b;">PROTOCOL // 选择 1 项核心遗物</h2>
-            <div style="font-size:11.5px;color:#94a3b8;">虫巢阶段清除奖励！该协议将在本局后续波次永久生效：</div>
+            <h2 class="modal-title" style="color:#f59e0b;">虫巢肃清 · 选择 1 项核心圣物</h2>
+            <div style="font-size:11.5px;color:#94a3b8;">战利品协议已解封，选定后将在本局后续波次永久生效：</div>
             ${state.pendingRelicChoices
               .map((relicId) => {
                 const r = RELIC_CATALOG[relicId];
@@ -1133,7 +1153,7 @@ function bootPlayableGame() {
           state = Engine.chooseRelic(state, btn.dataset.relic);
           sfx.playMerge();
           renderAll();
-          showToast(`PROTOCOL ACTIVE // ${RELIC_CATALOG[btn.dataset.relic].name}`);
+          showToast(`已激活核心圣物：${RELIC_CATALOG[btn.dataset.relic].name}`);
         });
       });
       return;
@@ -1168,7 +1188,6 @@ function bootPlayableGame() {
       .forEach((el) => el.classList.remove('colliding-pulse', 'dragging-source'));
   }
 
-  // 构建 1:1 真实格距大小的拖拽多格幽灵
   function buildRealScaleGhost(dragInfo) {
     const cellPx = Math.max(46, gridCellsBgEl.clientWidth / GRID_COLS);
     const { rows, cols, cells } = getShapeLayout(ITEM_CATALOG[dragInfo.itemId].baseCells, dragInfo.rotation);
@@ -1217,7 +1236,6 @@ function bootPlayableGame() {
       hull.style.borderRight = hasRight ? 'none' : `1.5px solid ${pal.border}`;
 
       if (r === starCell[0] && c === starCell[1]) {
-        hull.style.position = 'relative';
         hull.innerHTML = `<span class="star-badge">${renderStars(dragInfo.level)}</span>`;
       }
 
@@ -1228,14 +1246,12 @@ function bootPlayableGame() {
     const artOverlay = document.createElement('div');
     artOverlay.className = 'grid-piece-overlay';
     artOverlay.style.inset = '0';
-    artOverlay.innerHTML = `
-      ${getPlacedItemVisualHtml(dragInfo.itemId, rows, cols, dragInfo.rotation)}
-    `;
+    artOverlay.innerHTML = getPlacedItemVisualHtml(dragInfo.itemId, rows, cols, dragInfo.rotation);
     inner.appendChild(artOverlay);
 
     const rotHint = document.createElement('div');
-    rotHint.className = 'drag-rotate-badge mono';
-    rotHint.textContent = '[右键/R] 旋转';
+    rotHint.className = 'drag-rotate-badge';
+    rotHint.textContent = '[右键 / 滚轮] 旋转';
     inner.appendChild(rotHint);
 
     ghost.appendChild(inner);
@@ -1259,16 +1275,15 @@ function bootPlayableGame() {
     const relC = (clientX - rect.left) / cellW;
     const relR = (clientY - rect.top) / cellH;
 
-    let rawRow =
+    const rawRow =
       dragInfo.kind === 'grid'
         ? Math.floor(relR) - (dragInfo.grabOffsetR || 0)
         : Math.round(relR - rows * 0.5);
-    let rawCol =
+    const rawCol =
       dragInfo.kind === 'grid'
         ? Math.floor(relC) - (dragInfo.grabOffsetC || 0)
         : Math.round(relC - cols * 0.5);
 
-    // 仅在贴边微越界 1 格内磁吸纠偏，避免贴墙放置卡手
     const clampedRow = Math.max(0, Math.min(GRID_ROWS - rows, rawRow));
     const clampedCol = Math.max(0, Math.min(GRID_COLS - cols, rawCol));
     if (Math.abs(clampedRow - rawRow) <= 1 && Math.abs(clampedCol - rawCol) <= 1) {
@@ -1478,11 +1493,7 @@ function bootPlayableGame() {
             currentDrag.startX,
             currentDrag.startY
           );
-          showToast(
-            target.check.reason === 'out_of_bounds'
-              ? 'BOUNDARY // 超出星匣网格边界'
-              : 'COLLISION // 与现有装备位置冲突'
-          );
+          showToast(target.check.reason === 'out_of_bounds' ? '超出星匣网格边界' : '与现有装备位置碰撞');
           return;
         }
 
@@ -1501,7 +1512,7 @@ function bootPlayableGame() {
             activeId = target.check.mergeTargetInstanceId || state.placedItems[state.placedItems.length - 1]?.instanceId;
             if (state.placedItems.length === prevLen && nextMaxSum > prevMaxSum) {
               sfx.playMerge();
-              showToast('UPGRADE // 购入并直接升星');
+              showToast('购入并直接合成升星');
             } else {
               sfx.playLockIn();
             }
@@ -1517,7 +1528,7 @@ function bootPlayableGame() {
             activeId = target.check.mergeTargetInstanceId || currentDrag.instanceId;
             if (state.placedItems.length + state.stashItems.length < prevLen) {
               sfx.playMerge();
-              showToast('UPGRADE // 二合一超载升星');
+              showToast('模块二合一超载升星完成');
             } else {
               sfx.playLockIn();
             }
@@ -1526,7 +1537,7 @@ function bootPlayableGame() {
           renderAll();
         } catch (err) {
           sfx.playClang();
-          showToast(err.message);
+          showToast(localizeError(err.message));
         }
         return;
       }
@@ -1552,7 +1563,7 @@ function bootPlayableGame() {
             });
             if (state.placedItems.length + state.stashItems.length < prevTotal) {
               sfx.playMerge();
-              showToast('UPGRADE // 暂存舱内合成升星');
+              showToast('暂存舱内合成升星完成');
             } else {
               sfx.playLockIn();
             }
@@ -1560,12 +1571,11 @@ function bootPlayableGame() {
           renderAll();
         } catch (err) {
           sfx.playClang();
-          showToast(err.message);
+          showToast(localizeError(err.message));
         }
         return;
       }
 
-      // 拖到无效空白处 -> 弹性回弹原位
       sfx.playClang();
       springBackGhost(
         currentDrag.ghostEl,
@@ -1588,7 +1598,7 @@ function bootPlayableGame() {
     if (info.kind === 'shop') {
       if (state.gold < info.cost) {
         sfx.playClang();
-        showToast('INSUFFICIENT CREDITS // 信用点不足');
+        showToast('信用金币不足');
         return;
       }
       try {
@@ -1597,12 +1607,12 @@ function bootPlayableGame() {
           const newest = state.stashItems[state.stashItems.length - 1];
           selectedRef = newest ? { source: 'stash', instanceId: newest.instanceId } : null;
           sfx.playBuy();
-          showToast(`ACQUIRED // ${ITEM_CATALOG[info.itemId].name} 已入舱`);
+          showToast(`已购入【${ITEM_CATALOG[info.itemId].name}】放入备舱`);
         } else {
           const spot = findFirstValidGridCell(info.itemId, 1, 0);
           if (!spot) {
             sfx.playClang();
-            showToast('CAPACITY FULL // 暂存舱与星匣均已满');
+            showToast('备舱与装甲星匣均已满');
             return;
           }
           state = Engine.buyShopItem(state, info.slotIndex, {
@@ -1612,16 +1622,16 @@ function bootPlayableGame() {
           });
           if (spot.isMerge) {
             sfx.playMerge();
-            showToast('UPGRADE // 购入并直接合成升星');
+            showToast('购入并直接合成升星');
           } else {
             sfx.playLockIn();
-            showToast(`DEPLOYED // 自动装入 ${COL_LABELS[spot.col]}${spot.row + 1}`);
+            showToast(`已自动装入装甲星匣第 ${spot.row + 1} 行`);
           }
         }
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
       return;
     }
@@ -1647,7 +1657,7 @@ function bootPlayableGame() {
           selectedRef = { source: 'grid', instanceId: targetItem.instanceId };
           sfx.playMerge();
           triggerSlamFeedback(targetItem.instanceId);
-          showToast('UPGRADE // 模块二合一超载升星');
+          showToast('模块二合一超载升星完成');
           renderAll();
           return;
         } catch {
@@ -1671,7 +1681,7 @@ function bootPlayableGame() {
         renderAll();
       } catch (err) {
         sfx.playClang();
-        showToast(err.message);
+        showToast(localizeError(err.message));
       }
     }
   });

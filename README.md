@@ -1,20 +1,24 @@
-# 《星匣乱斗：口袋军械库》(Stargrid Arsenal) — A组（GPT/Codex 后端 + Antigravity 前端协作版）
+# 《铁血防线：1944》
 
-本项目是双 AI 协作对比实验的 **A 组仓库**：
-- **主策划 / 前端工程 / 契约设计**：Google Antigravity
-- **后端核心逻辑引擎 (`src/backend/engine.mjs`)**：OpenAI GPT / Codex
+**二战复古实体卡牌 × 钢铁要塞召唤海陆空对抗兽潮**（TapTap 竖屏 H5 肉鸽塔防，100% 纯中文离线可打包）。
 
-## 快速启动与测试
+## 核心特性
+- **《KARDS》级复古军事卡牌桌面**：做旧羊皮纸作战沙盘、泛黄油画兵牌、红线电报连携与黄铜红漆军印；
+- **海陆空协同守城战**：部署突击步兵排、马克沁重机枪、双联高射炮（1.5× 对空克制）、155毫米榴弹炮、喀秋莎火箭炮、重型主战坦克与俯冲轰炸机（穿甲空袭），点击战场可下达红漆“集火区”炮兵标尺；
+- **纯本地零依赖**：原生 ES Modules + Canvas + WebAudio，打包后仅 ~330 KB。
+
+## 常用开发与协同命令
 ```bash
-# 运行后端契约测试（10 组）
+# 运行核心契约单测（10 组）
 node --test tests/contract.test.mjs
 
-# 本地启动预览服务 (默认 http://127.0.0.1:4171)
+# 启动本地预览（默认 http://127.0.0.1:4171）
 node server.mjs
 
-# 打包 TapTap H5 测试压缩包 (.zip)
+# 打出 TapTap H5 离线包 (.zip)
 node scripts/pack-taptap.mjs
 ```
 
-## 给 Codex 的接入说明
-请依次阅读 [`AGENTS.md`](AGENTS.md)、[`GAME_DESIGN.md`](GAME_DESIGN.md) 与 [`BACKEND_TASK.md`](BACKEND_TASK.md)，并在 `src/backend/engine.mjs` 中完成实现后开启 `IS_BACKEND_IMPLEMENTED = true`。
+## 双 AI（Antigravity × OpenAI GPT/Codex）协作说明
+- 仓库已开放 GPT/Codex 参与 **UI 精修、二战复古生图、音效拟音与测试文档杂活**；
+- 协作规范见 [`AGENTS.md`](AGENTS.md)，具体派活清单与网页端生图 Prompt 见 [`GPT_TASKS.md`](GPT_TASKS.md)。

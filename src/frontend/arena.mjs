@@ -1,32 +1,13 @@
 /**
- * 《星匣乱斗：口袋军械库》v2.0 真实精灵骨骼动效 & 机甲剧场渲染引擎
- * - 真实背景贴图 + 透明抠图机甲精灵（Q版蓝金先锋 / 绯红突袭者 / 深空终焉首领）
- * - 呼吸动画、开火前冲、受击像素级白闪剪影、延迟扣血残影条、专属武器光束/电弧/斩击
+ * 《星匣：深渊防线》v3.0 全屏 2.5D 俯视角肉鸽虫潮生存战斗引擎
+ * - 100% 忠实同步权威 BattleReport.timeline（绝不篡改后端判定）
+ * - 支持自动风筝走位 + 玩家按住鼠标/触控手动走位牵引
+ * - 三类深渊异虫 + 巨型利维坦 Boss + 地面持久酸液/焦痕贴花层
+ * - 零 Emoji：所有伤害跳字均采用硬核描边战术数值风格
  */
 
-import { ITEM_CATALOG, OVERTIME_START_SEC, WAVE_CONFIGS } from '../../shared/protocol.mjs';
+import { ITEM_CATALOG, OVERTIME_START_SEC } from '../../shared/protocol.mjs';
 import { sfx } from './sfx.mjs';
-
-function loadImage(src) {
-  const img = new Image();
-  img.loaded = false;
-  img.failed = false;
-  img.onload = () => {
-    img.loaded = true;
-  };
-  img.onerror = () => {
-    img.failed = true;
-  };
-  img.src = src;
-  return img;
-}
-
-const PRELOADED_ASSETS = {
-  bg: loadImage('./src/frontend/assets/bg-hangar.jpg'),
-  hero: loadImage('./src/frontend/assets/hero-mech.png'),
-  enemy: loadImage('./src/frontend/assets/enemy-raider.png'),
-  boss: loadImage('./src/frontend/assets/boss-overlord.png'),
-};
 
 export class BattleArena {
   constructor(canvas, callbacks = {}) {
@@ -34,18 +15,15 @@ export class BattleArena {
     this.ctx = canvas.getContext('2d');
     this.callbacks = callbacks;
 
-    this.assets = PRELOADED_ASSETS;
+    this.decalCanvas = document.createElement('canvas');
+    this.decalCtx = this.decalCanvas.getContext('2d');
 
-    // 离屏画布用于实现像素级纯白受击闪烁剪影
-    this.flashCanvas = document.createElement('canvas');
-    this.flashCanvas.width = 256;
-    this.flashCanvas.height = 256;
-    this.flashCtx = this.flashCanvas.getContext('2d');
+    this.logicalW = 410;
+    this.logicalH = 760;
 
-    this.mode = 'preview'; // 'preview' | 'playing' | 'done'
+    this.mode = 'idle'; // 'idle' | 'playing' | 'done'
     this.speed = 1;
     this.report = null;
-    this.previewState = null;
 
     this.simTime = 0;
     this.eventCursor = 0;
@@ -53,42 +31,95 @@ export class BattleArena {
     this.rafId = null;
 
     this.playerHp = 100;
-    this.playerTrailHp = 100;
     this.playerMaxHp = 100;
     this.playerShield = 0;
 
     this.enemyHp = 65;
-    this.enemyTrailHp = 65;
     this.enemyMaxHp = 65;
     this.enemyShield = 0;
     this.enemyBurn = 0;
     this.enemyShock = 0;
     this.enemyChill = 0;
+    this.totalEnemyPool = 65;
 
-    this.projectiles = [];
+    this.rig = {
+      x: 205,
+      y: 380,
+      vx: 0,
+      vy: 0,
+      angle: -Math.PI / 2,
+      turretAngle: -Math.PI / 2,
+      hitFlash: 0,
+      recoil: 0,
+      orbitPhase: 0,
+    };
+
+    this.pointerSteer = { active: false, x: 205, y: 380 };
+    this.equippedMeta = { hasDagger: false, hasMedkit: false };
+
+    this.monsters = [];
+    this.killCount = 0;
+    this.initialSwarmCount = 18;
+
+    this.slashes = [];
     this.beams = [];
     this.bolts = [];
     this.particles = [];
+    this.shards = [];
     this.floatingTexts = [];
     this.rings = [];
-    this.muzzleFlashes = [];
-    this.ambientMotes = Array.from({ length: 14 }, (_, i) => ({
-      x: ((i * 73) % 100) / 100,
-      y: ((i * 41) % 100) / 100,
-      r: 1 + (i % 2),
-      spd: 0.04 + (i % 4) * 0.02,
-      phase: i * 0.8,
-    }));
 
     this.shakeTime = 0;
     this.shakeAmp = 0;
-    this.playerHitFlash = 0;
-    this.enemyHitFlash = 0;
-    this.playerAttackKick = 0;
-    this.enemyAttackKick = 0;
-    this.playerKnockback = 0;
-    this.enemyKnockback = 0;
-    this.idlePhase = 0;
+    this.playerHurtPulse = 0;
+    this.ambientPhase = 0;
+
+    this.bindInput();
+  }
+
+  bindInput() {
+    const updatePtr = (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      this.pointerSteer.x = ((e.clientX - rect.left) / rect.width) * this.logicalW;
+      this.pointerSteer.y = ((e.clientY - rect.top) / rect.height) * this.logicalH;
+    };
+
+    this.canvas.addEventListener('pointerdown', (e) => {
+      if (this.mode !== 'playing') return;
+      this.pointerSteer.active = true;
+      updatePtr(e);
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (!this.pointerSteer.active) return;
+      updatePtr(e);
+    });
+    window.addEventListener('pointerup', () => {
+      this.pointerSteer.active = false;
+    });
+    window.addEventListener('pointercancel', () => {
+      this.pointerSteer.active = false;
+    });
+  }
+
+  resizeToContainer() {
+    const parent = this.canvas.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const w = Math.max(300, Math.round(rect.width));
+    const h = Math.max(420, Math.round(rect.height));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+    this.logicalW = w;
+    this.logicalH = h;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    if (this.decalCanvas.width !== w || this.decalCanvas.height !== h) {
+      this.decalCanvas.width = w;
+      this.decalCanvas.height = h;
+    }
   }
 
   startLoop() {
@@ -111,58 +142,142 @@ export class BattleArena {
     }
   }
 
-  setPreview(state) {
-    this.mode = 'preview';
-    this.report = null;
-    this.previewState = state;
-    const waveCfg = WAVE_CONFIGS[(state.wave || 1) - 1] || WAVE_CONFIGS[0];
-    this.playerMaxHp = state.playerMaxHp || 100;
-    this.playerHp = this.playerMaxHp;
-    this.playerTrailHp = this.playerMaxHp;
-    this.playerShield = (state.relics || []).includes('titanium_hull') ? 25 : 0;
-    this.enemyMaxHp = waveCfg.maxHp;
-    this.enemyHp = waveCfg.maxHp;
-    this.enemyTrailHp = waveCfg.maxHp;
-    this.enemyShield = waveCfg.initialShield;
-    this.enemyBurn = 0;
-    this.enemyShock = 0;
-    this.enemyChill = 0;
-    this.clearFx();
+  spawnMonster(kind, wave, edgeBias = null) {
+    const w = this.logicalW;
+    const h = this.logicalH;
+    const edge = edgeBias !== null ? edgeBias : Math.floor(Math.random() * 4);
+    let x = w * 0.5;
+    let y = 70;
+    const pad = 26;
+    if (edge === 0) {
+      x = Math.random() * w;
+      y = -pad;
+    } else if (edge === 1) {
+      x = w + pad;
+      y = Math.random() * h;
+    } else if (edge === 2) {
+      x = Math.random() * w;
+      y = h + pad;
+    } else {
+      x = -pad;
+      y = Math.random() * h;
+    }
+
+    const isBoss = kind === 'boss';
+    const radius = isBoss ? 30 : kind === 'brute' ? 16 : kind === 'stalker' ? 12 : 10;
+    const baseSpeed = isBoss ? 34 : kind === 'stalker' ? 76 : kind === 'brute' ? 42 : 58;
+
+    return {
+      id: Math.random().toString(36).slice(2),
+      kind,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      radius,
+      speed: baseSpeed + Math.min(20, wave * 2),
+      angle: 0,
+      legPhase: Math.random() * Math.PI * 2,
+      hitFlash: 0,
+      alive: true,
+      isBoss,
+    };
   }
 
-  playReport(report) {
+  playReport(report, stateSnapshot = null) {
+    this.resizeToContainer();
     this.report = report;
     this.mode = 'playing';
     this.simTime = 0;
     this.eventCursor = 0;
+
     this.playerMaxHp = report.playerStartHp;
     this.playerHp = report.playerStartHp;
-    this.playerTrailHp = report.playerStartHp;
     this.playerShield = report.playerStartShield;
+
     this.enemyMaxHp = report.enemy.maxHp;
     this.enemyHp = report.enemy.maxHp;
-    this.enemyTrailHp = report.enemy.maxHp;
     this.enemyShield = report.enemy.initialShield;
+    this.totalEnemyPool = Math.max(1, report.enemy.maxHp + report.enemy.initialShield);
+
     this.enemyBurn = 0;
     this.enemyShock = 0;
     this.enemyChill = 0;
-    this.clearFx();
-  }
 
-  clearFx() {
-    this.projectiles = [];
+    this.rig = {
+      x: this.logicalW * 0.5,
+      y: this.logicalH * 0.54,
+      vx: 0,
+      vy: 0,
+      angle: -Math.PI / 2,
+      turretAngle: -Math.PI / 2,
+      hitFlash: 0,
+      recoil: 0,
+      orbitPhase: 0,
+    };
+
+    const placed = stateSnapshot?.placedItems || [];
+    this.equippedMeta = {
+      hasDagger: placed.some((p) => p.itemId === 'plasma_dagger'),
+      hasMedkit: placed.some((p) => p.itemId === 'nano_medkit'),
+    };
+
+    this.decalCtx.clearRect(0, 0, this.decalCanvas.width, this.decalCanvas.height);
+    this.slashes = [];
     this.beams = [];
     this.bolts = [];
     this.particles = [];
+    this.shards = [];
     this.floatingTexts = [];
     this.rings = [];
-    this.muzzleFlashes = [];
-    this.playerHitFlash = 0;
-    this.enemyHitFlash = 0;
-    this.playerAttackKick = 0;
-    this.enemyAttackKick = 0;
-    this.playerKnockback = 0;
-    this.enemyKnockback = 0;
+    this.shakeTime = 0;
+    this.playerHurtPulse = 0;
+
+    this.monsters = [];
+    this.killCount = 0;
+    const count = 14 + report.wave * 3;
+    this.initialSwarmCount = count;
+
+    for (let i = 0; i < count; i++) {
+      const roll = Math.random();
+      const kind = roll > 0.8 ? 'brute' : roll > 0.45 ? 'stalker' : 'crawler';
+      const m = this.spawnMonster(kind, report.wave, i % 4);
+      // 首批异虫提前分布在视野边缘内侧，开战即刻接敌
+      if (i < 8) {
+        const ang = (Math.PI * 2 * i) / 8 + Math.random() * 0.3;
+        const dist = 145 + Math.random() * 60;
+        m.x = Math.max(20, Math.min(this.logicalW - 20, this.rig.x + Math.cos(ang) * dist));
+        m.y = Math.max(75, Math.min(this.logicalH - 75, this.rig.y + Math.sin(ang) * dist));
+      }
+      this.monsters.push(m);
+    }
+
+    if (report.enemy.isBoss) {
+      const boss = this.spawnMonster('boss', report.wave, 0);
+      boss.x = this.logicalW * 0.5;
+      boss.y = 115;
+      this.monsters.push(boss);
+      this.initialSwarmCount += 1;
+    }
+
+    this.emitTelemetry();
+  }
+
+  emitTelemetry() {
+    this.callbacks.onTelemetryTick?.({
+      simTime: this.simTime,
+      playerHp: this.playerHp,
+      playerMaxHp: this.playerMaxHp,
+      playerShield: this.playerShield,
+      enemyHp: this.enemyHp,
+      enemyMaxHp: this.enemyMaxHp,
+      enemyShield: this.enemyShield,
+      enemyBurn: this.enemyBurn,
+      enemyShock: this.enemyShock,
+      enemyChill: this.enemyChill,
+      killCount: this.killCount,
+      totalKills: this.initialSwarmCount,
+    });
   }
 
   setSpeed(speed) {
@@ -187,46 +302,124 @@ export class BattleArena {
       this.playerShield = this.report.playerEndShield;
       this.enemyHp = this.report.enemyEndHp;
       this.enemyShield = this.report.enemyEndShield;
-      if (this.report.won) sfx.playVictory();
-      else sfx.playDefeat();
+
+      if (this.report.won) {
+        for (const m of this.monsters) {
+          if (m.alive) this.killMonster(m, '#38bdf8');
+        }
+        this.rings.push({
+          x: this.rig.x,
+          y: this.rig.y,
+          r: 18,
+          maxR: 260,
+          color: '#38bdf8',
+          life: 0.48,
+          maxLife: 0.48,
+        });
+        sfx.playVictory();
+      } else {
+        sfx.playDefeat();
+      }
+      this.emitTelemetry();
       this.callbacks.onPlaybackComplete?.(this.report);
     }
+  }
+
+  stampDecal(x, y, color, radius, isScorch = false) {
+    const dctx = this.decalCtx;
+    dctx.save();
+    dctx.globalAlpha = isScorch ? 0.38 : 0.34;
+    dctx.fillStyle = isScorch ? '#02040a' : color;
+    dctx.beginPath();
+    dctx.arc(x, y, radius, 0, Math.PI * 2);
+    dctx.fill();
+    for (let i = 0; i < 4; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = radius * (0.7 + Math.random() * 0.9);
+      dctx.beginPath();
+      dctx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, radius * 0.32, 0, Math.PI * 2);
+      dctx.fill();
+    }
+    dctx.restore();
+  }
+
+  killMonster(m, sparkColor = '#a855f7') {
+    if (!m.alive) return;
+    m.alive = false;
+    this.killCount += 1;
+    const ichorCol = m.isBoss ? '#9f1239' : m.kind === 'brute' ? '#0f766e' : '#581c87';
+    this.stampDecal(m.x, m.y, ichorCol, m.radius * 1.15);
+    this.spawnSparks(m.x, m.y, sparkColor, m.isBoss ? 28 : 10);
+
+    // 掉落生物晶核碎片飞向玩家
+    const shardCount = m.isBoss ? 8 : 2;
+    for (let i = 0; i < shardCount; i++) {
+      this.shards.push({
+        x: m.x + (Math.random() - 0.5) * 16,
+        y: m.y + (Math.random() - 0.5) * 16,
+        vx: (Math.random() - 0.5) * 70,
+        vy: (Math.random() - 0.5) * 70,
+        color: m.isBoss ? '#f59e0b' : '#38bdf8',
+      });
+    }
+  }
+
+  syncSwarmCasualties(sparkColor = '#38bdf8') {
+    if (!this.report) return;
+    const nonBoss = this.monsters.filter((m) => !m.isBoss);
+    const boss = this.monsters.find((m) => m.isBoss);
+    const remainRatio = Math.max(0, (this.enemyHp + this.enemyShield) / this.totalEnemyPool);
+    const targetAliveNonBoss = Math.ceil(nonBoss.length * remainRatio);
+    let currentAlive = nonBoss.filter((m) => m.alive).length;
+
+    while (currentAlive > targetAliveNonBoss) {
+      // 优先击杀离玩家最近的普通虫群
+      let nearest = null;
+      let minDist = Infinity;
+      for (const m of nonBoss) {
+        if (!m.alive) continue;
+        const d = Math.hypot(m.x - this.rig.x, m.y - this.rig.y);
+        if (d < minDist) {
+          minDist = d;
+          nearest = m;
+        }
+      }
+      if (!nearest) break;
+      this.killMonster(nearest, sparkColor);
+      currentAlive--;
+    }
+
+    if (boss && boss.alive && this.enemyHp <= 0) {
+      this.killMonster(boss, '#f59e0b');
+    }
+  }
+
+  getNearestAliveMonsters(limit = 4) {
+    return this.monsters
+      .filter((m) => m.alive)
+      .sort(
+        (a, b) =>
+          Math.hypot(a.x - this.rig.x, a.y - this.rig.y) -
+          Math.hypot(b.x - this.rig.x, b.y - this.rig.y)
+      )
+      .slice(0, limit);
   }
 
   spawnSparks(x, y, color, count = 12) {
     for (let i = 0; i < count; i++) {
       const ang = Math.random() * Math.PI * 2;
-      const spd = 45 + Math.random() * 140;
+      const spd = 50 + Math.random() * 170;
       this.particles.push({
         x,
         y,
         vx: Math.cos(ang) * spd,
-        vy: Math.sin(ang) * spd - 30,
-        r: 2 + Math.random() * 2.5,
+        vy: Math.sin(ang) * spd,
+        r: 1.8 + Math.random() * 2.4,
         color,
-        life: 0.28 + Math.random() * 0.25,
-        maxLife: 0.5,
+        life: 0.22 + Math.random() * 0.25,
+        maxLife: 0.45,
       });
     }
-  }
-
-  getStageAnchors() {
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const isExpanded = this.mode === 'playing' || h > 165;
-    const floorY = h * (isExpanded ? 0.85 : 0.89);
-    const spriteSize = isExpanded ? 114 : 54;
-    return {
-      w,
-      h,
-      isExpanded,
-      floorY,
-      spriteSize,
-      pX: w * 0.23,
-      pY: floorY - spriteSize * 0.48,
-      eX: w * 0.77,
-      eY: floorY - spriteSize * 0.48,
-    };
   }
 
   consumeEvent(ev, silent = false) {
@@ -238,210 +431,206 @@ export class BattleArena {
     this.enemyShock = ev.enemyShock ?? this.enemyShock;
     this.enemyChill = ev.enemyChill ?? this.enemyChill;
 
-    if (silent) return;
+    if (silent) {
+      this.syncSwarmCasualties('#38bdf8');
+      return;
+    }
 
-    const { w, h, pX, pY, eX, eY, spriteSize } = this.getStageAnchors();
-    const muzzleX = pX + spriteSize * 0.35;
-    const muzzleY = pY - spriteSize * 0.08;
-    const targetX = eX - spriteSize * 0.2;
-    const targetY = eY - spriteSize * 0.04;
+    const targets = this.getNearestAliveMonsters(5);
+    const primary = targets[0] || {
+      x: this.rig.x + Math.cos(this.rig.turretAngle) * 120,
+      y: this.rig.y + Math.sin(this.rig.turretAngle) * 120,
+    };
 
     if (ev.type === 'weapon_hit') {
       const def = ITEM_CATALOG[ev.itemId];
       const color = def?.color || '#38bdf8';
-      this.playerAttackKick = 1.0;
-      this.muzzleFlashes.push({ x: muzzleX, y: muzzleY, color, life: 0.14, maxLife: 0.14, r: 18 });
+      const aimAngle = Math.atan2(primary.y - this.rig.y, primary.x - this.rig.x);
+      this.rig.turretAngle = aimAngle;
+      this.rig.recoil = 1.0;
 
       if (ev.itemId === 'rail_rifle') {
+        const endX = this.rig.x + Math.cos(aimAngle) * 520;
+        const endY = this.rig.y + Math.sin(aimAngle) * 520;
         this.beams.push({
-          x1: muzzleX,
-          y1: muzzleY,
-          x2: targetX,
-          y2: targetY,
-          color: '#a5b4fc',
-          life: 0.28,
-          maxLife: 0.28,
-          width: ev.isCrit ? 11 : 7,
+          x1: this.rig.x,
+          y1: this.rig.y,
+          x2: endX,
+          y2: endY,
+          color: '#818cf8',
+          life: 0.26,
+          maxLife: 0.26,
+          width: ev.isCrit ? 12 : 7,
         });
-        this.rings.push({ x: targetX, y: targetY, r: 8, maxR: 48, color: '#818cf8', life: 0.32, maxLife: 0.32 });
-        this.spawnSparks(targetX, targetY, '#c7d2fe', ev.isCrit ? 22 : 14);
+        this.stampDecal(primary.x, primary.y, '#02040a', 14, true);
+        this.spawnSparks(primary.x, primary.y, '#c7d2fe', ev.isCrit ? 22 : 12);
+        this.shakeTime = Math.max(this.shakeTime, 0.16);
+        this.shakeAmp = Math.max(this.shakeAmp, ev.isCrit ? 6 : 3.5);
       } else if (ev.itemId === 'arc_launcher') {
-        const pts = [[muzzleX, muzzleY]];
-        const segs = 5;
-        for (let i = 1; i < segs; i++) {
-          const frac = i / segs;
-          pts.push([
-            muzzleX + (targetX - muzzleX) * frac,
-            muzzleY + (targetY - muzzleY) * frac + (Math.random() - 0.5) * 32,
-          ]);
+        const chainTargets = targets.length > 0 ? targets : [primary];
+        const pts = [[this.rig.x, this.rig.y]];
+        let prevX = this.rig.x;
+        let prevY = this.rig.y;
+        for (const t of chainTargets) {
+          const midX = (prevX + t.x) * 0.5 + (Math.random() - 0.5) * 26;
+          const midY = (prevY + t.y) * 0.5 + (Math.random() - 0.5) * 26;
+          pts.push([midX, midY], [t.x, t.y]);
+          if (t.hitFlash !== undefined) t.hitFlash = 0.18;
+          this.spawnSparks(t.x, t.y, '#e879f9', 8);
+          prevX = t.x;
+          prevY = t.y;
         }
-        pts.push([targetX, targetY]);
-        this.bolts.push({ pts, color: '#e879f9', life: 0.26, maxLife: 0.26 });
-        this.spawnSparks(targetX, targetY, '#f0abfc', 14);
+        this.bolts.push({ pts, color: '#c084fc', life: 0.24, maxLife: 0.24 });
       } else {
-        this.projectiles.push({
-          x: muzzleX,
-          y: muzzleY,
-          tx: targetX,
-          ty: targetY,
-          progress: 0,
+        // 等离子短匕大范围弧形斩击
+        this.slashes.push({
+          x: this.rig.x,
+          y: this.rig.y,
+          angle: aimAngle,
+          radius: ev.isCrit ? 96 : 80,
           color,
-          isCrit: ev.isCrit,
-          kind: 'slash',
+          life: 0.2,
+          maxLife: 0.2,
         });
-        this.spawnSparks(targetX, targetY, color, ev.isCrit ? 18 : 10);
+        for (const t of targets.slice(0, 3)) {
+          if (t.hitFlash !== undefined) t.hitFlash = 0.16;
+          this.spawnSparks(t.x, t.y, color, 8);
+        }
       }
 
-      this.enemyHitFlash = 0.18;
-      this.enemyKnockback = ev.isCrit ? 10 : 5;
+      if (primary.hitFlash !== undefined) primary.hitFlash = 0.18;
       if (ev.isCrit) {
         this.shakeTime = 0.2;
         this.shakeAmp = 5.5;
       }
 
       this.floatingTexts.push({
-        x: eX + (Math.random() * 28 - 14),
-        y: eY - spriteSize * 0.45,
-        text: ev.isCrit ? `💥${ev.damage}!` : `-${ev.damage}`,
-        color: ev.isCrit ? '#fde047' : '#ffffff',
-        vy: -42,
-        life: 0.85,
-        maxLife: 0.85,
-        scale: ev.isCrit ? 1.35 : 1.05,
+        x: primary.x + (Math.random() * 20 - 10),
+        y: primary.y - 16,
+        text: ev.isCrit ? `CRIT ${ev.damage}` : `${ev.damage}`,
+        color: ev.isCrit ? '#f59e0b' : '#f8fafc',
+        vy: -48,
+        life: 0.72,
+        maxLife: 0.72,
+        scale: ev.isCrit ? 1.25 : 0.95,
       });
 
       if (ev.vampHealed > 0) {
         this.floatingTexts.push({
-          x: pX,
-          y: pY - spriteSize * 0.42,
-          text: `+${ev.vampHealed}`,
+          x: this.rig.x,
+          y: this.rig.y - 24,
+          text: `+${ev.vampHealed} HP`,
           color: '#4ade80',
-          vy: -32,
-          life: 0.7,
-          maxLife: 0.7,
-          scale: 0.95,
+          vy: -34,
+          life: 0.65,
+          maxLife: 0.65,
+          scale: 0.85,
         });
       }
+
+      this.syncSwarmCasualties(color);
       sfx.playHit(ev.isCrit);
       this.callbacks.onItemTrigger?.(ev.instanceId, color);
     } else if (ev.type === 'shield_gain') {
       this.rings.push({
-        x: pX,
-        y: pY,
-        r: 18,
-        maxR: spriteSize * 0.65,
-        color: '#fbbf24',
-        life: 0.45,
-        maxLife: 0.45,
+        x: this.rig.x,
+        y: this.rig.y,
+        r: 14,
+        maxR: 62,
+        color: '#f59e0b',
+        life: 0.4,
+        maxLife: 0.4,
       });
       this.floatingTexts.push({
-        x: pX + (Math.random() * 18 - 9),
-        y: pY - spriteSize * 0.45,
-        text: `🛡 +${ev.shieldGained}`,
-        color: '#fde047',
-        vy: -34,
-        life: 0.75,
-        maxLife: 0.75,
-        scale: 1.0,
+        x: this.rig.x,
+        y: this.rig.y - 26,
+        text: `SHD +${ev.shieldGained}`,
+        color: '#fbbf24',
+        vy: -36,
+        life: 0.68,
+        maxLife: 0.68,
+        scale: 0.9,
       });
       sfx.playShield();
-      this.callbacks.onItemTrigger?.(ev.instanceId, '#fbbf24');
+      this.callbacks.onItemTrigger?.(ev.instanceId, '#f59e0b');
     } else if (ev.type === 'gadget_heal') {
       this.rings.push({
-        x: pX,
-        y: pY,
-        r: 14,
-        maxR: spriteSize * 0.58,
-        color: '#4ade80',
-        life: 0.45,
-        maxLife: 0.45,
+        x: this.rig.x,
+        y: this.rig.y,
+        r: 12,
+        maxR: 54,
+        color: '#22c55e',
+        life: 0.4,
+        maxLife: 0.4,
       });
-      const label = ev.healed > 0 ? `+${ev.healed} HP` : `🛡 +${ev.shieldGained}`;
+      const label = ev.healed > 0 ? `HP +${ev.healed}` : `SHD +${ev.shieldGained}`;
       this.floatingTexts.push({
-        x: pX,
-        y: pY - spriteSize * 0.45,
+        x: this.rig.x,
+        y: this.rig.y - 26,
         text: label,
         color: '#4ade80',
-        vy: -34,
-        life: 0.75,
-        maxLife: 0.75,
-        scale: 1.0,
+        vy: -36,
+        life: 0.68,
+        maxLife: 0.68,
+        scale: 0.9,
       });
       sfx.playHeal();
-      this.callbacks.onItemTrigger?.(ev.instanceId, '#4ade80');
+      this.callbacks.onItemTrigger?.(ev.instanceId, '#22c55e');
     } else if (ev.type === 'burn_tick') {
-      this.spawnSparks(eX, eY, '#fb7185', 8);
+      this.spawnSparks(primary.x, primary.y, '#fb7185', 8);
       this.floatingTexts.push({
-        x: eX - 18,
-        y: eY - spriteSize * 0.52,
-        text: `🔥 -${ev.damage}`,
+        x: primary.x,
+        y: primary.y - 20,
+        text: `BURN ${ev.damage}`,
         color: '#fb7185',
-        vy: -30,
-        life: 0.7,
-        maxLife: 0.7,
-        scale: 0.95,
+        vy: -34,
+        life: 0.65,
+        maxLife: 0.65,
+        scale: 0.9,
       });
+      this.syncSwarmCasualties('#fb7185');
     } else if (ev.type === 'enemy_attack') {
-      this.enemyAttackKick = 1.0;
-      this.projectiles.push({
-        x: eX - spriteSize * 0.35,
-        y: eY - spriteSize * 0.08,
-        tx: pX + spriteSize * 0.2,
-        ty: pY,
-        progress: 0,
-        color: '#f43f5e',
-        isCrit: false,
-        kind: 'orb',
-      });
-      this.playerHitFlash = 0.18;
-      this.playerKnockback = 7;
+      this.rig.hitFlash = 0.2;
+      this.playerHurtPulse = 0.28;
       this.shakeTime = 0.14;
       this.shakeAmp = 4;
-      this.spawnSparks(pX + 10, pY, '#fb7185', 10);
+      this.spawnSparks(this.rig.x, this.rig.y, '#f43f5e', 10);
       this.floatingTexts.push({
-        x: pX + (Math.random() * 18 - 9),
-        y: pY - spriteSize * 0.45,
+        x: this.rig.x + (Math.random() * 14 - 7),
+        y: this.rig.y - 26,
         text: `-${ev.damage}`,
-        color: '#fda4af',
-        vy: -38,
-        life: 0.75,
-        maxLife: 0.75,
-        scale: 1.05,
+        color: '#fb7185',
+        vy: -40,
+        life: 0.7,
+        maxLife: 0.7,
+        scale: 1.0,
       });
     } else if (ev.type === 'overtime_storm') {
       this.shakeTime = 0.18;
       this.shakeAmp = 4.5;
       this.floatingTexts.push({
-        x: w * 0.5,
-        y: h * 0.36,
-        text: `⚡星渊风暴 -${ev.damage}`,
+        x: this.logicalW * 0.5,
+        y: this.logicalH * 0.28,
+        text: `STORM -${ev.damage}`,
         color: '#f59e0b',
-        vy: -26,
-        life: 0.85,
-        maxLife: 0.85,
+        vy: -24,
+        life: 0.8,
+        maxLife: 0.8,
         scale: 1.05,
       });
+      this.syncSwarmCasualties('#f59e0b');
     }
+
+    this.emitTelemetry();
   }
 
   update(dt) {
-    this.idlePhase += dt * 3.1;
+    this.ambientPhase += dt * 3.0;
+    this.rig.orbitPhase += dt * 4.2;
     if (this.shakeTime > 0) this.shakeTime = Math.max(0, this.shakeTime - dt);
-    if (this.playerHitFlash > 0) this.playerHitFlash = Math.max(0, this.playerHitFlash - dt);
-    if (this.enemyHitFlash > 0) this.enemyHitFlash = Math.max(0, this.enemyHitFlash - dt);
-    if (this.playerAttackKick > 0) this.playerAttackKick = Math.max(0, this.playerAttackKick - dt * 5.5);
-    if (this.enemyAttackKick > 0) this.enemyAttackKick = Math.max(0, this.enemyAttackKick - dt * 5.5);
-    this.playerKnockback *= Math.pow(0.001, dt);
-    this.enemyKnockback *= Math.pow(0.001, dt);
-
-    // 延迟白色掉血残影平滑追赶
-    this.playerTrailHp += (this.playerHp - this.playerTrailHp) * Math.min(1, dt * 6);
-    this.enemyTrailHp += (this.enemyHp - this.enemyTrailHp) * Math.min(1, dt * 6);
-
-    for (const m of this.ambientMotes) {
-      m.y -= m.spd * dt;
-      if (m.y < 0) m.y = 1;
-    }
+    if (this.playerHurtPulse > 0) this.playerHurtPulse = Math.max(0, this.playerHurtPulse - dt);
+    if (this.rig.hitFlash > 0) this.rig.hitFlash = Math.max(0, this.rig.hitFlash - dt);
+    if (this.rig.recoil > 0) this.rig.recoil = Math.max(0, this.rig.recoil - dt * 6);
 
     if (this.mode === 'playing' && this.report) {
       this.simTime += dt * this.speed;
@@ -457,44 +646,144 @@ export class BattleArena {
       }
     }
 
-    for (let i = this.projectiles.length - 1; i >= 0; i--) {
-      const p = this.projectiles[i];
-      p.progress += dt * (5.6 * Math.max(1, this.speed * 0.75));
-      if (p.progress >= 1) this.projectiles.splice(i, 1);
+    // 生存者机甲移动逻辑：手动牵引优先，否则自动风筝远离最近虫群
+    const w = this.logicalW;
+    const h = this.logicalH;
+    let moveX = 0;
+    let moveY = 0;
+
+    if (this.pointerSteer.active) {
+      const dx = this.pointerSteer.x - this.rig.x;
+      const dy = this.pointerSteer.y - this.rig.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 8) {
+        moveX = dx / dist;
+        moveY = dy / dist;
+      }
+    } else {
+      const nearest = this.getNearestAliveMonsters(4);
+      let repX = 0;
+      let repY = 0;
+      for (const m of nearest) {
+        const dx = this.rig.x - m.x;
+        const dy = this.rig.y - m.y;
+        const d = Math.max(12, Math.hypot(dx, dy));
+        if (d < 150) {
+          repX += (dx / d) * (150 - d);
+          repY += (dy / d) * (150 - d);
+        }
+      }
+      // 柔和拉回场地中心避免卡墙角
+      repX += (w * 0.5 - this.rig.x) * 0.45 + Math.cos(this.ambientPhase * 0.35) * 28;
+      repY += (h * 0.53 - this.rig.y) * 0.45 + Math.sin(this.ambientPhase * 0.45) * 28;
+      const mag = Math.hypot(repX, repY);
+      if (mag > 1) {
+        moveX = repX / mag;
+        moveY = repY / mag;
+      }
     }
 
+    const rigSpeed = 105;
+    this.rig.vx = moveX * rigSpeed;
+    this.rig.vy = moveY * rigSpeed;
+    this.rig.x = Math.max(36, Math.min(w - 36, this.rig.x + this.rig.vx * dt));
+    this.rig.y = Math.max(96, Math.min(h - 108, this.rig.y + this.rig.vy * dt));
+    if (Math.hypot(this.rig.vx, this.rig.vy) > 10) {
+      this.rig.angle = Math.atan2(this.rig.vy, this.rig.vx);
+    }
+
+    // 虫群追击与彼此分离转向
+    const chillFactor = 1 - Math.min(0.45, this.enemyChill * 0.15);
+    for (let i = 0; i < this.monsters.length; i++) {
+      const m = this.monsters[i];
+      if (!m.alive) continue;
+      if (m.hitFlash > 0) m.hitFlash = Math.max(0, m.hitFlash - dt);
+      m.legPhase += dt * (m.kind === 'stalker' ? 14 : 10) * chillFactor;
+
+      const dx = this.rig.x - m.x;
+      const dy = this.rig.y - m.y;
+      const dist = Math.max(1, Math.hypot(dx, dy));
+      let sx = dx / dist;
+      let sy = dy / dist;
+
+      // 保持最小交战圈避免重合成一点
+      if (dist < m.radius + 26) {
+        sx *= -0.4;
+        sy *= -0.4;
+      }
+
+      // 简单近邻分离力
+      for (let j = i + 1; j < this.monsters.length; j++) {
+        const o = this.monsters[j];
+        if (!o.alive) continue;
+        const ox = m.x - o.x;
+        const oy = m.y - o.y;
+        const od = Math.hypot(ox, oy);
+        const minSep = m.radius + o.radius + 6;
+        if (od > 0.1 && od < minSep) {
+          const push = ((minSep - od) / minSep) * 1.4;
+          const nx = (ox / od) * push;
+          const ny = (oy / od) * push;
+          sx += nx;
+          sy += ny;
+          o.x -= nx * 16 * dt;
+          o.y -= ny * 16 * dt;
+        }
+      }
+
+      const len = Math.max(0.01, Math.hypot(sx, sy));
+      const spd = m.speed * chillFactor * Math.max(1, this.speed * 0.8);
+      m.x += (sx / len) * spd * dt;
+      m.y += (sy / len) * spd * dt;
+      m.angle = Math.atan2(dy, dx);
+    }
+
+    // 生物晶核磁力吸取
+    for (let i = this.shards.length - 1; i >= 0; i--) {
+      const sh = this.shards[i];
+      const dx = this.rig.x - sh.x;
+      const dy = this.rig.y - sh.y;
+      const d = Math.hypot(dx, dy);
+      if (d < 16) {
+        this.shards.splice(i, 1);
+        continue;
+      }
+      sh.vx += (dx / d) * 620 * dt;
+      sh.vy += (dy / d) * 620 * dt;
+      sh.vx *= 0.94;
+      sh.vy *= 0.94;
+      sh.x += sh.vx * dt;
+      sh.y += sh.vy * dt;
+    }
+
+    for (let i = this.slashes.length - 1; i >= 0; i--) {
+      this.slashes[i].life -= dt;
+      if (this.slashes[i].life <= 0) this.slashes.splice(i, 1);
+    }
     for (let i = this.beams.length - 1; i >= 0; i--) {
       this.beams[i].life -= dt;
       if (this.beams[i].life <= 0) this.beams.splice(i, 1);
     }
-
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       this.bolts[i].life -= dt;
       if (this.bolts[i].life <= 0) this.bolts.splice(i, 1);
     }
-
-    for (let i = this.muzzleFlashes.length - 1; i >= 0; i--) {
-      this.muzzleFlashes[i].life -= dt;
-      if (this.muzzleFlashes[i].life <= 0) this.muzzleFlashes.splice(i, 1);
-    }
-
     for (let i = this.particles.length - 1; i >= 0; i--) {
-      const pt = this.particles[i];
-      pt.x += pt.vx * dt;
-      pt.y += pt.vy * dt;
-      pt.vy += 260 * dt;
-      pt.life -= dt;
-      if (pt.life <= 0) this.particles.splice(i, 1);
+      const p = this.particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.92;
+      p.vy *= 0.92;
+      p.life -= dt;
+      if (p.life <= 0) this.particles.splice(i, 1);
     }
-
     for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
       const ft = this.floatingTexts[i];
       ft.y += ft.vy * dt;
-      ft.vy *= 0.94;
+      ft.vy *= 0.92;
       ft.life -= dt;
       if (ft.life <= 0) this.floatingTexts.splice(i, 1);
     }
-
     for (let i = this.rings.length - 1; i >= 0; i--) {
       const rg = this.rings[i];
       rg.life -= dt;
@@ -503,187 +792,258 @@ export class BattleArena {
     }
   }
 
-  drawHangarBackground(w, h) {
+  drawTerrain(w, h) {
     const ctx = this.ctx;
-    const bg = this.assets.bg;
-    if (bg.loaded) {
-      const imgAspect = bg.width / bg.height;
-      const canvasAspect = w / h;
-      let sx = 0;
-      let sy = 0;
-      let sw = bg.width;
-      let sh = bg.height;
-      if (canvasAspect > imgAspect) {
-        sh = bg.width / canvasAspect;
-        // 向下取景，确保地面甲板与星云窗同时入画
-        sy = (bg.height - sh) * 0.76;
-      } else {
-        sw = bg.height * canvasAspect;
-        sx = (bg.width - sw) * 0.5;
-      }
-      ctx.drawImage(bg, sx, sy, sw, sh, 0, 0, w, h);
-      // 轻度底部暗化渐变增强角色与血条可读性
-      const shade = ctx.createLinearGradient(0, 0, 0, h);
-      shade.addColorStop(0, 'rgba(5, 8, 20, 0.45)');
-      shade.addColorStop(0.5, 'rgba(5, 8, 20, 0.08)');
-      shade.addColorStop(1, 'rgba(5, 8, 20, 0.55)');
-      ctx.fillStyle = shade;
-      ctx.fillRect(0, 0, w, h);
-    } else {
-      const g = ctx.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, '#0b1630');
-      g.addColorStop(1, '#15223d');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#07090f';
+    ctx.fillRect(0, 0, w, h);
+
+    // 金属工业甲板网格与深渊裂隙纹路
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.06)';
+    ctx.lineWidth = 1;
+    const step = 36;
+    for (let x = 0; x < w; x += step) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (let y = 0; y < h; y += step) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
     }
 
-    // 漂浮星尘粒子
-    for (const m of this.ambientMotes) {
-      const mx = m.x * w + Math.sin(this.idlePhase + m.phase) * 4;
-      const my = m.y * h;
-      ctx.fillStyle = 'rgba(125, 211, 252, 0.35)';
-      ctx.beginPath();
-      ctx.arc(mx, my, m.r, 0, Math.PI * 2);
-      ctx.fill();
+    // 甲板锚点十字准星
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+    for (let x = step; x < w; x += step * 2) {
+      for (let y = step; y < h; y += step * 2) {
+        ctx.beginPath();
+        ctx.moveTo(x - 3, y);
+        ctx.lineTo(x + 3, y);
+        ctx.moveTo(x, y - 3);
+        ctx.lineTo(x, y + 3);
+        ctx.stroke();
+      }
     }
+
+    // 持久地面污迹/焦痕贴花层
+    ctx.drawImage(this.decalCanvas, 0, 0);
+
+    // 以生存者为中心的战术探照灯与四周暗角压暗
+    const light = ctx.createRadialGradient(this.rig.x, this.rig.y, 40, this.rig.x, this.rig.y, Math.max(w, h) * 0.65);
+    light.addColorStop(0, 'rgba(56, 189, 248, 0.08)');
+    light.addColorStop(0.55, 'rgba(7, 9, 15, 0.0)');
+    light.addColorStop(1, 'rgba(2, 4, 10, 0.72)');
+    ctx.fillStyle = light;
+    ctx.fillRect(0, 0, w, h);
   }
 
-  drawSpriteCharacter({ img, cx, floorY, size, phaseOffset, kick, knockback, isEnemy, hitFlash, shield, auraColor }) {
+  drawMonster(m) {
     const ctx = this.ctx;
-    const breath = Math.sin(this.idlePhase + phaseOffset);
-    const scaleY = 1 + breath * 0.035;
-    const scaleX = 1 - breath * 0.02;
-    const lungeDir = isEnemy ? -1 : 1;
-    const offsetX = kick * 14 * lungeDir - knockback * lungeDir;
-    const tilt = kick * 0.08 * lungeDir;
-
-    const drawX = cx + offsetX;
-    const drawY = floorY;
-
-    // 脚底接触阴影
     ctx.save();
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
+    ctx.translate(m.x, m.y);
+    ctx.rotate(m.angle);
+
+    // 投影
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
     ctx.beginPath();
-    ctx.ellipse(drawX, floorY + 2, size * 0.36, size * 0.1, 0, 0, Math.PI * 2);
+    ctx.ellipse(-2, 4, m.radius * 1.05, m.radius * 0.78, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Boss 或精英脚底光环
-    if (auraColor) {
-      ctx.strokeStyle = auraColor;
-      ctx.globalAlpha = 0.45 + Math.sin(this.idlePhase * 1.5) * 0.15;
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.ellipse(drawX, floorY + 1, size * 0.44, size * 0.13, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    // 护盾六边形能量罩
-    if (shield > 0) {
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.72)';
-      ctx.fillStyle = 'rgba(251, 191, 36, 0.09)';
+    if (m.isBoss) {
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.45)';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(drawX, drawY - size * 0.48, size * 0.56, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(0, 0, m.radius + 9 + Math.sin(this.ambientPhase * 2) * 3, 0, Math.PI * 2);
       ctx.stroke();
     }
 
-    ctx.translate(drawX, drawY);
-    ctx.rotate(tilt);
-    ctx.scale(scaleX, scaleY);
+    const legWiggle = Math.sin(m.legPhase) * 4;
+    const chitinFill =
+      m.hitFlash > 0
+        ? '#ffffff'
+        : this.enemyChill > 0
+          ? '#164e63'
+          : m.isBoss
+            ? '#3b0764'
+            : m.kind === 'brute'
+              ? '#1e293b'
+              : m.kind === 'stalker'
+                ? '#4c0519'
+                : '#172554';
+    const edgeColor =
+      m.hitFlash > 0
+        ? '#ffffff'
+        : m.isBoss
+          ? '#f43f5e'
+          : m.kind === 'brute'
+            ? '#2dd4bf'
+            : m.kind === 'stalker'
+              ? '#fb7185'
+              : '#38bdf8';
 
-    if (img && img.loaded) {
-      ctx.drawImage(img, -size * 0.5, -size, size, size);
-
-      if (hitFlash > 0) {
-        const fctx = this.flashCtx;
-        fctx.clearRect(0, 0, 256, 256);
-        fctx.globalCompositeOperation = 'source-over';
-        fctx.drawImage(img, 0, 0, 256, 256);
-        fctx.globalCompositeOperation = 'source-in';
-        fctx.fillStyle = '#ffffff';
-        fctx.fillRect(0, 0, 256, 256);
-        fctx.globalCompositeOperation = 'source-over';
-
-        ctx.globalAlpha = Math.min(0.85, hitFlash * 5);
-        ctx.drawImage(this.flashCanvas, -size * 0.5, -size, size, size);
-        ctx.globalAlpha = 1;
+    // 节肢步足
+    ctx.strokeStyle = m.hitFlash > 0 ? '#ffffff' : '#0f172a';
+    ctx.lineWidth = m.isBoss ? 3.5 : 2;
+    for (const side of [-1, 1]) {
+      for (const offset of [-0.5, 0, 0.5]) {
+        const bx = offset * m.radius * 0.9;
+        const by = side * m.radius * 0.65;
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(bx - legWiggle * offset, side * (m.radius * 1.45));
+        ctx.stroke();
       }
-    } else {
-      // 图片加载前的精致兜底轮廓
-      ctx.fillStyle = isEnemy ? '#9f1239' : '#0284c7';
-      ctx.strokeStyle = '#090d16';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(-size * 0.3, -size * 0.85, size * 0.6, size * 0.8, 12);
-      ctx.fill();
-      ctx.stroke();
     }
-    ctx.restore();
-  }
 
-  drawGameHpBar(x, y, width, hp, trailHp, maxHp, shield, fillColor) {
-    const ctx = this.ctx;
-    const h = 12;
-
-    // 外框斜切底槽
-    ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-    ctx.lineWidth = 1.5;
+    // 钳螯前肢
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = m.isBoss ? 3.5 : 2.2;
     ctx.beginPath();
-    ctx.roundRect(x, y, width, h, 4);
+    ctx.moveTo(m.radius * 0.4, -m.radius * 0.5);
+    ctx.lineTo(m.radius * 1.35, -m.radius * 0.35);
+    ctx.moveTo(m.radius * 0.4, m.radius * 0.5);
+    ctx.lineTo(m.radius * 1.35, m.radius * 0.35);
+    ctx.stroke();
+
+    // 甲壳躯体
+    ctx.fillStyle = chitinFill;
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = m.isBoss ? 2.5 : 1.6;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, m.radius, m.radius * 0.78, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    // 延迟白色掉血残影
-    const trailPct = Math.max(0, Math.min(1, trailHp / Math.max(1, maxHp)));
-    if (trailPct > 0) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
+    // 复眼与核心裂口
+    if (m.hitFlash <= 0) {
+      ctx.fillStyle = m.isBoss ? '#fde047' : '#f43f5e';
       ctx.beginPath();
-      ctx.roundRect(x + 1.5, y + 1.5, Math.max(0, (width - 3) * trailPct), h - 3, 2.5);
-      ctx.fill();
-    }
-
-    // 实血量条
-    const hpPct = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
-    if (hpPct > 0) {
-      const grad = ctx.createLinearGradient(x, y, x, y + h);
-      grad.addColorStop(0, fillColor);
-      grad.addColorStop(1, '#0f172a');
-      ctx.fillStyle = fillColor;
-      ctx.beginPath();
-      ctx.roundRect(x + 1.5, y + 1.5, Math.max(0, (width - 3) * hpPct), h - 3, 2.5);
+      ctx.arc(m.radius * 0.48, -m.radius * 0.24, m.isBoss ? 4 : 2.1, 0, Math.PI * 2);
+      ctx.arc(m.radius * 0.48, m.radius * 0.24, m.isBoss ? 4 : 2.1, 0, Math.PI * 2);
       ctx.fill();
 
-      // 顶部高光条
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
-      ctx.fillRect(x + 3, y + 2, Math.max(0, (width - 6) * hpPct), 2.5);
+      if (m.isBoss) {
+        ctx.fillStyle = '#fb7185';
+        ctx.beginPath();
+        ctx.arc(-4, 0, 9 + Math.sin(this.ambientPhase * 3) * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
-    // 护盾条
-    if (shield > 0) {
-      const sPct = Math.min(1, shield / Math.max(1, maxHp));
-      ctx.fillStyle = '#fbbf24';
+    ctx.restore();
+  }
+
+  drawSurvivorRig() {
+    const ctx = this.ctx;
+    const { x, y, angle, turretAngle, hitFlash, recoil, orbitPhase } = this.rig;
+
+    ctx.save();
+    ctx.translate(x, y);
+
+    // 护盾力场六边形
+    if (this.playerShield > 0) {
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.08)';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(x + 1, y + h + 2, Math.max(4, (width - 2) * sPct), 4, 2);
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI * 2 * i) / 6 + orbitPhase * 0.12;
+        const px = Math.cos(a) * 29;
+        const py = Math.sin(a) * 29;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // 接地阴影
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 18, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 底盘与推进尾焰
+    ctx.save();
+    ctx.rotate(angle);
+    if (Math.hypot(this.rig.vx, this.rig.vy) > 15) {
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.7)';
+      ctx.beginPath();
+      ctx.moveTo(-14, -5);
+      ctx.lineTo(-26 - Math.random() * 6, 0);
+      ctx.lineTo(-14, 5);
+      ctx.closePath();
       ctx.fill();
     }
+    ctx.fillStyle = hitFlash > 0 ? '#ffffff' : '#1e293b';
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(-15, -13, 30, 26, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
 
-    // 描边数值
-    const label = shield > 0 ? `${hp}/${maxHp} +${shield}🛡` : `${hp}/${maxHp}`;
-    ctx.font = '800 10.5px "Space Grotesk", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#090d16';
-    ctx.strokeText(label, x + width / 2, y - 4);
-    ctx.fillStyle = '#f8fafc';
-    ctx.fillText(label, x + width / 2, y - 4);
+    // 旋转炮塔与主炮管
+    ctx.save();
+    ctx.rotate(turretAngle);
+    const rx = -recoil * 5;
+    ctx.fillStyle = '#0f172a';
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.6;
+    ctx.fillRect(6 + rx, -3.5, 17, 7);
+    ctx.strokeRect(6 + rx, -3.5, 17, 7);
+
+    ctx.fillStyle = hitFlash > 0 ? '#ffffff' : '#0284c7';
+    ctx.strokeStyle = '#050811';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(rx, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#e0f2fe';
+    ctx.fillRect(rx + 2, -3, 5, 6);
+    ctx.restore();
+
+    // 环绕浮游刃与急救无人机
+    if (this.equippedMeta.hasDagger) {
+      const bx = Math.cos(orbitPhase) * 36;
+      const by = Math.sin(orbitPhase) * 36;
+      ctx.save();
+      ctx.translate(bx, by);
+      ctx.rotate(orbitPhase + Math.PI / 2);
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-5, -4);
+      ctx.lineTo(-5, 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    if (this.equippedMeta.hasMedkit) {
+      const mx = Math.cos(-orbitPhase * 0.7) * 34;
+      const my = Math.sin(-orbitPhase * 0.7) * 34;
+      ctx.fillStyle = '#22c55e';
+      ctx.strokeStyle = '#050811';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(mx, my, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.restore();
   }
 
   render() {
     const ctx = this.ctx;
-    const { w, h, isExpanded, floorY, spriteSize, pX, eX } = this.getStageAnchors();
+    const w = this.logicalW;
+    const h = this.logicalH;
     ctx.clearRect(0, 0, w, h);
 
     ctx.save();
@@ -694,218 +1054,122 @@ export class BattleArena {
       );
     }
 
-    this.drawHangarBackground(w, h);
+    this.drawTerrain(w, h);
 
-    const waveNum = this.report?.wave || this.previewState?.wave || 1;
-    const waveCfg = WAVE_CONFIGS[waveNum - 1] || WAVE_CONFIGS[0];
-
-    if (this.mode === 'playing' && this.simTime >= OVERTIME_START_SEC) {
-      ctx.fillStyle = `rgba(245, 158, 11, ${0.14 + Math.sin(this.idlePhase * 3) * 0.06})`;
-      ctx.fillRect(0, 0, w, h);
-    } else if (waveCfg.isBoss) {
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.07)';
-      ctx.fillRect(0, 0, w, h);
+    // 生物碎片
+    for (const sh of this.shards) {
+      ctx.fillStyle = sh.color;
+      ctx.beginPath();
+      ctx.arc(sh.x, sh.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    // 英雄与敌方角色渲染
-    this.drawSpriteCharacter({
-      img: this.assets.hero,
-      cx: pX,
-      floorY,
-      size: spriteSize,
-      phaseOffset: 0,
-      kick: this.playerAttackKick,
-      knockback: this.playerKnockback,
-      isEnemy: false,
-      hitFlash: this.playerHitFlash,
-      shield: this.playerShield,
-      auraColor: '#38bdf8',
-    });
-
-    this.drawSpriteCharacter({
-      img: waveCfg.isBoss ? this.assets.boss : this.assets.enemy,
-      cx: eX,
-      floorY,
-      size: waveCfg.isBoss ? spriteSize * 1.12 : spriteSize,
-      phaseOffset: 1.8,
-      kick: this.enemyAttackKick,
-      knockback: this.enemyKnockback,
-      isEnemy: true,
-      hitFlash: this.enemyHitFlash,
-      shield: this.enemyShield,
-      auraColor: waveCfg.accentColor,
-    });
-
-    // 扩散护盾/冲击光环
+    // 扩散环
     for (const rg of this.rings) {
       ctx.strokeStyle = rg.color;
       ctx.globalAlpha = Math.max(0, rg.life / rg.maxLife);
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2);
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
 
-    // 磁轨狙击光束
-    for (const bm of this.beams) {
-      const alpha = Math.max(0, bm.life / bm.maxLife);
+    // 虫群绘制
+    for (const m of this.monsters) {
+      if (m.alive) this.drawMonster(m);
+    }
+
+    // 生存者装甲核心
+    this.drawSurvivorRig();
+
+    // 弧形等离子斩击
+    for (const sl of this.slashes) {
+      const a = Math.max(0, sl.life / sl.maxLife);
       ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = bm.color;
-      ctx.lineWidth = bm.width;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = sl.color;
+      ctx.lineWidth = 10 * a;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(bm.x1, bm.y1);
-      ctx.lineTo(bm.x2, bm.y2);
+      ctx.arc(sl.x, sl.y, sl.radius, sl.angle - 1.05, sl.angle + 1.05);
       ctx.stroke();
-
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = Math.max(2, bm.width * 0.4);
-      ctx.beginPath();
-      ctx.moveTo(bm.x1, bm.y1);
-      ctx.lineTo(bm.x2, bm.y2);
+      ctx.lineWidth = 3 * a;
       ctx.stroke();
       ctx.restore();
     }
 
-    // 电弧闪电链
-    for (const bl of this.bolts) {
-      const alpha = Math.max(0, bl.life / bl.maxLife);
+    // 贯穿钨芯磁轨炮光束
+    for (const bm of this.beams) {
+      const a = Math.max(0, bm.life / bm.maxLife);
       ctx.save();
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = bm.color;
+      ctx.lineWidth = bm.width * a;
+      ctx.beginPath();
+      ctx.moveTo(bm.x1, bm.y1);
+      ctx.lineTo(bm.x2, bm.y2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.5, bm.width * 0.35 * a);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 高压闪电链
+    for (const bl of this.bolts) {
+      const a = Math.max(0, bl.life / bl.maxLife);
+      ctx.save();
+      ctx.globalAlpha = a;
       ctx.strokeStyle = bl.color;
-      ctx.lineWidth = 4.5;
-      ctx.lineJoin = 'round';
+      ctx.lineWidth = 4;
       ctx.beginPath();
       bl.pts.forEach(([x, y], idx) => (idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
       ctx.stroke();
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = '#fdf4ff';
+      ctx.lineWidth = 1.6;
       ctx.stroke();
       ctx.restore();
     }
 
-    // 弹道斩击与火球
-    for (const pr of this.projectiles) {
-      const px = pr.x + (pr.tx - pr.x) * pr.progress;
-      const py = pr.y + (pr.ty - pr.y) * pr.progress - Math.sin(pr.progress * Math.PI) * 14;
+    // 火花粒子
+    for (const p of this.particles) {
       ctx.save();
-      ctx.translate(px, py);
-      if (pr.kind === 'slash') {
-        ctx.strokeStyle = pr.color;
-        ctx.lineWidth = pr.isCrit ? 5.5 : 3.5;
-        ctx.beginPath();
-        ctx.arc(0, 0, pr.isCrit ? 14 : 10, -0.9, 0.9);
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = pr.color;
-        ctx.beginPath();
-        ctx.arc(0, 0, 6.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#fff1f2';
-        ctx.beginPath();
-        ctx.arc(0, 0, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // 枪口闪光
-    for (const mf of this.muzzleFlashes) {
-      const a = mf.life / mf.maxLife;
-      ctx.save();
-      ctx.globalAlpha = a;
-      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+      ctx.fillStyle = p.color;
       ctx.beginPath();
-      ctx.arc(mf.x, mf.y, mf.r * a, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
 
-    // 火花颗粒
-    for (const pt of this.particles) {
-      const a = Math.max(0, pt.life / pt.maxLife);
-      ctx.save();
-      ctx.globalAlpha = a;
-      ctx.fillStyle = pt.color;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, pt.r * a, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // 双方游戏风格血条
-    this.drawGameHpBar(10, 15, 128, this.playerHp, this.playerTrailHp, this.playerMaxHp, this.playerShield, '#22c55e');
-    this.drawGameHpBar(w - 138, 15, 128, this.enemyHp, this.enemyTrailHp, this.enemyMaxHp, this.enemyShield, waveCfg.accentColor);
-
-    // 双方底部名字牌
-    ctx.font = '800 10.5px "Space Grotesk", "Noto Sans SC", system-ui, sans-serif';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#090d16';
-
-    ctx.textAlign = 'left';
-    ctx.strokeText('星匣先锋', 10, h - 7);
-    ctx.fillStyle = '#7dd3fc';
-    ctx.fillText('星匣先锋', 10, h - 7);
-
-    ctx.textAlign = 'right';
-    const enemyLabel = waveCfg.isBoss ? `👑 ${waveCfg.name}` : waveCfg.name;
-    ctx.strokeText(enemyLabel, w - 10, h - 7);
-    ctx.fillStyle = waveCfg.isBoss ? '#fde047' : '#fca5a5';
-    ctx.fillText(enemyLabel, w - 10, h - 7);
-
-    // 异常状态图标条
-    const statuses = [];
-    if (this.enemyBurn > 0) statuses.push(`🔥${this.enemyBurn}`);
-    if (this.enemyShock > 0) statuses.push(`⚡${this.enemyShock}`);
-    if (this.enemyChill > 0) statuses.push(`❄️${this.enemyChill}`);
-    if (statuses.length > 0) {
-      ctx.textAlign = 'center';
-      ctx.font = '800 11px system-ui, sans-serif';
-      ctx.strokeText(statuses.join(' '), eX, Math.min(h - 22, floorY - spriteSize - 2));
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(statuses.join(' '), eX, Math.min(h - 22, floorY - spriteSize - 2));
-    }
-
-    // 中央对抗信息 / 战斗计时器
-    ctx.textAlign = 'center';
-    if (this.mode === 'playing') {
-      const timeLabel =
-        this.simTime >= OVERTIME_START_SEC
-          ? `⚡风暴 ${this.simTime.toFixed(1)}s`
-          : `⚔️ ${this.simTime.toFixed(1)}s`;
-      ctx.font = '800 12px ui-monospace, monospace';
-      ctx.strokeText(timeLabel, w / 2, 24);
-      ctx.fillStyle = this.simTime >= OVERTIME_START_SEC ? '#fde047' : '#e0f2fe';
-      ctx.fillText(timeLabel, w / 2, 24);
-    } else {
-      const infoLabel = `VS · 敌攻${waveCfg.attack}/${waveCfg.cooldownSec}s`;
-      ctx.font = '800 10.5px "Noto Sans SC", system-ui, sans-serif';
-      ctx.strokeText(infoLabel, w / 2, 22);
-      ctx.fillStyle = '#cbd5e1';
-      ctx.fillText(infoLabel, w / 2, 22);
-    }
-
-    // 粗描边弹跳伤害飘字
+    // 粗描边战术数值跳字（无 Emoji）
     for (const ft of this.floatingTexts) {
       const alpha = Math.max(0, Math.min(1, (ft.life / ft.maxLife) * 1.4));
-      const pop = 1 + Math.max(0, (ft.life / ft.maxLife - 0.75) * 1.5);
+      const pop = 1 + Math.max(0, (ft.life / ft.maxLife - 0.75) * 1.4);
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.font = `900 ${Math.round(14 * ft.scale * pop)}px "Space Grotesk", "Noto Sans SC", system-ui, sans-serif`;
+      ctx.font = `900 ${Math.round(13 * ft.scale * pop)}px "JetBrains Mono", "Space Grotesk", monospace`;
       ctx.textAlign = 'center';
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = '#090d16';
+      ctx.lineWidth = 3.5;
+      ctx.strokeStyle = '#050811';
       ctx.strokeText(ft.text, ft.x, ft.y);
       ctx.fillStyle = ft.color;
       ctx.fillText(ft.text, ft.x, ft.y);
       ctx.restore();
     }
 
-    if (isExpanded && this.mode === 'playing') {
-      // 仅轻微压暗底部边缘
+    // 受击屏幕红框脉冲与 18s+ 加时风暴警戒
+    if (this.playerHurtPulse > 0) {
+      ctx.strokeStyle = `rgba(244, 63, 94, ${this.playerHurtPulse * 2.2})`;
+      ctx.lineWidth = 14;
+      ctx.strokeRect(0, 0, w, h);
+    }
+    if (this.mode === 'playing' && this.simTime >= OVERTIME_START_SEC) {
+      ctx.strokeStyle = `rgba(245, 158, 11, ${0.35 + Math.sin(this.ambientPhase * 4) * 0.2})`;
+      ctx.lineWidth = 6;
+      ctx.strokeRect(3, 3, w - 6, h - 6);
     }
 
     ctx.restore();

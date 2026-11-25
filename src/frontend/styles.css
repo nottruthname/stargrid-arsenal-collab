@@ -14,6 +14,9 @@
   --khaki-muted: #a99d83;
   --crimson-seal: #991b1b;
   --crimson-bright: #dc2626;
+  --paper-fibers:
+    repeating-linear-gradient(12deg, transparent 0 3px, rgba(89, 66, 34, 0.07) 3px 4px, transparent 4px 7px),
+    repeating-linear-gradient(101deg, transparent 0 4px, rgba(255, 247, 220, 0.14) 4px 5px, transparent 5px 8px);
 }
 
 * {
@@ -514,11 +517,14 @@ body {
   height: 308px;
   margin: 0 auto;
   background:
+    var(--paper-fibers),
+    linear-gradient(92deg, transparent 48%, rgba(83, 59, 32, 0.13) 49%, rgba(255, 244, 208, 0.24) 49.6%, transparent 51%),
+    linear-gradient(177deg, transparent 64%, rgba(255, 244, 208, 0.18) 65%, rgba(83, 59, 32, 0.11) 65.5%, transparent 67%),
     radial-gradient(circle at 50% 45%, #ded0af 0%, #c6b58f 72%, #b09b72 100%);
   border: 2px solid #59472c;
   border-radius: 7px;
   padding: 4px;
-  box-shadow: inset 0 0 22px rgba(56, 42, 22, 0.48);
+  box-shadow: inset 0 0 20px rgba(56, 42, 22, 0.36), inset 0 1px 1px #ead9ae, 0 2px 3px rgba(20, 15, 8, 0.4);
 }
 
 .grid-inner {
@@ -625,18 +631,18 @@ body {
 .grid-piece-hull {
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, #f3ead3 0%, #dfd0af 100%);
+  background: var(--paper-fibers), linear-gradient(180deg, #f3ead3 0%, #dfd0af 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 5px rgba(34, 24, 12, 0.35);
   position: relative;
 }
 
 .grid-piece-cell.tier-2 .grid-piece-hull {
-  background: linear-gradient(180deg, #f8f4e8 0%, #e4d8bb 100%);
+  background: var(--paper-fibers), linear-gradient(180deg, #f8f4e8 0%, #e4d8bb 100%);
   box-shadow: inset 0 0 0 1.5px #94a3b8, 0 3px 8px rgba(34, 24, 12, 0.4);
 }
 
 .grid-piece-cell.tier-3 .grid-piece-hull {
-  background: linear-gradient(180deg, #fef3c7 0%, #f5d08a 100%);
+  background: var(--paper-fibers), linear-gradient(180deg, #fef3c7 0%, #f5d08a 100%);
   box-shadow: inset 0 0 0 1.5px #d97706, 0 3px 10px rgba(180, 83, 9, 0.45);
 }
 
@@ -934,14 +940,19 @@ body {
   touch-action: none;
 }
 
-/* 《KARDS》风泛黄实体军事卡面 */
+/* 泛黄实体军事卡面 */
 .shop-card {
   position: relative;
+  min-width: 0;
   border: 1.5px solid #8a734c;
   border-top: 4px solid var(--item-color, #4d6b3c);
   border-bottom: 3px solid #3c2f1d;
   border-radius: 7px;
-  background: linear-gradient(180deg, #efe5ce 0%, #deceaa 100%);
+  background:
+    var(--paper-fibers),
+    linear-gradient(145deg, transparent 80%, rgba(117, 82, 39, 0.13) 82%, rgba(255, 249, 224, 0.24) 83%, transparent 86%),
+    radial-gradient(ellipse at 0 100%, rgba(136, 93, 43, 0.17), transparent 50%),
+    linear-gradient(180deg, #efe5ce 0%, #deceaa 100%);
   color: var(--ink-dark);
   padding: 4px 5px 5px;
   display: flex;
@@ -949,13 +960,18 @@ body {
   align-items: center;
   gap: 3px;
   cursor: grab;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  transition: transform 0.1s ease, filter 0.1s ease;
+  box-shadow: 0 1px 2px rgba(24, 16, 8, 0.58), 0 3px 5px rgba(24, 16, 8, 0.24), inset 0 0 7px rgba(112, 79, 38, 0.26);
 }
 
-.shop-card:hover:not(.sold) {
-  transform: translateY(-2px);
-  filter: brightness(1.03);
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .shop-card {
+    transition: transform 0.14s ease, box-shadow 0.14s ease;
+  }
+
+  .shop-card:hover:not(.sold) {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 3px rgba(24, 16, 8, 0.42), 0 5px 8px rgba(24, 16, 8, 0.3), inset 0 0 7px rgba(112, 79, 38, 0.26);
+  }
 }
 
 .shop-card.sold {
@@ -1006,6 +1022,30 @@ body {
   color: #991b1b;
   border-color: #991b1b;
   background: #fee2e2;
+}
+
+.shop-card-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+}
+
+.shop-category-stamp {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  padding: 0 3px;
+  background: var(--paper-fibers), #ead6ae;
+  color: #792c23;
+  border: 3px double currentColor;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.1;
+  white-space: nowrap;
+  transform: rotate(6deg);
+  pointer-events: none;
 }
 
 .shop-name {
@@ -1296,6 +1336,52 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.battle-report-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(176, 147, 100, 0.45);
+  color: #f4e2ba;
+}
+
+.battle-report-duration {
+  margin-top: 3px;
+  color: #cbbda0;
+  font-size: 11px;
+}
+
+.battle-report-stamp {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  background:
+    var(--paper-fibers),
+    radial-gradient(circle at 32% 26%, #eddbb6, #d3b689);
+  color: #8d2e26;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(12, 10, 6, 0.6);
+  font-family: 'Songti SC', SimSun, serif;
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  transform: rotate(-11deg);
+}
+
+.battle-report-stamp::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px dashed currentColor;
+  border-radius: 50%;
+  opacity: 0.72;
 }
 
 .contrib-row {

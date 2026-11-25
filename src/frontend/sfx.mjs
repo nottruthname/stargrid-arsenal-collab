@@ -1,12 +1,14 @@
 /**
- * 《星匣：深渊防线》v3.0 机械阻尼物理音效 & 战区合成音频引擎
- * 零外部音频资源依赖，强化抓取、逐格卡榫、重装锁入与金属碰撞手感。
+ * 《铁血防线：1944》沙盘交互与战地拟音
+ * 所有音效均由浏览器现场合成。
  */
 
 class SoundEngine {
   constructor() {
     this.ctx = null;
     this.muted = false;
+    this.noiseBuffer = null;
+    this.battleCompressor = null;
     this._lastDetentAt = 0;
   }
 
@@ -29,7 +31,7 @@ class SoundEngine {
     return this.muted;
   }
 
-  tone({ freq = 440, endFreq = null, duration = 0.08, type = 'sine', gain = 0.08, delay = 0 }) {
+  tone({ freq = 440, endFreq = null, duration = 0.08, type = 'sine', gain = 0.08, delay = 0, output = null }) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime + delay;
@@ -44,9 +46,54 @@ class SoundEngine {
     amp.gain.linearRampToValueAtTime(gain, now + 0.006);
     amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     osc.connect(amp);
-    amp.connect(ctx.destination);
+    amp.connect(output ?? ctx.destination);
     osc.start(now);
     osc.stop(now + duration + 0.015);
+  }
+
+  battleOutput(ctx) {
+    if (!this.battleCompressor) {
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 16;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.12;
+      compressor.connect(ctx.destination);
+      this.battleCompressor = compressor;
+    }
+    return this.battleCompressor;
+  }
+
+  filteredNoise(ctx, {
+    type = 'lowpass', frequency, endFrequency = frequency,
+    resonance = 0.7, duration, gain, delay = 0,
+  }) {
+    if (!this.noiseBuffer) {
+      // 同一段白噪声供所有音色复用，每次从不同位置取样。
+      this.noiseBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      const samples = this.noiseBuffer.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) {
+        samples[i] = Math.random() * 2 - 1;
+      }
+    }
+
+    const now = ctx.currentTime + delay;
+    const source = ctx.createBufferSource();
+    const filter = ctx.createBiquadFilter();
+    const amp = ctx.createGain();
+    source.buffer = this.noiseBuffer;
+    filter.type = type;
+    filter.Q.value = resonance;
+    filter.frequency.setValueAtTime(frequency, now);
+    filter.frequency.exponentialRampToValueAtTime(endFrequency, now + duration);
+    amp.gain.setValueAtTime(0.0001, now);
+    amp.gain.linearRampToValueAtTime(gain, now + 0.002);
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    source.connect(filter);
+    filter.connect(amp);
+    amp.connect(this.battleOutput(ctx));
+    source.start(now, Math.random() * (this.noiseBuffer.duration - duration), duration);
   }
 
   // 抓取模块解锁气动声
@@ -102,11 +149,60 @@ class SoundEngine {
   }
 
   playHit(isCrit = false) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.filteredNoise(ctx, {
+      frequency: isCrit ? 1500 : 1050,
+      endFrequency: isCrit ? 260 : 350,
+      duration: isCrit ? 0.17 : 0.08,
+      gain: isCrit ? 0.28 : 0.16,
+    });
     if (isCrit) {
-      this.tone({ freq: 680, endFreq: 110, duration: 0.13, type: 'sawtooth', gain: 0.085 });
-    } else {
-      this.tone({ freq: 340, endFreq: 130, duration: 0.06, type: 'square', gain: 0.035 });
+      this.tone({ freq: 135, endFreq: 52, duration: 0.12, gain: 0.12, output: this.battleOutput(ctx) });
     }
+  }
+
+  playCannonBlast() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    // 炮口爆鸣在前，低频冲击和尘土尾声随后落下。
+    this.filteredNoise(ctx, { frequency: 2600, endFrequency: 720, duration: 0.075, gain: 0.46 });
+    this.filteredNoise(ctx, {
+      frequency: 620, endFrequency: 90, duration: 0.48, gain: 0.68, delay: 0.012,
+    });
+    this.tone({
+      freq: 104, endFreq: 36, duration: 0.27, gain: 0.26, delay: 0.008, output: this.battleOutput(ctx),
+    });
+  }
+
+  playMgBurst() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const shotTimes = [0, 0.073, 0.15, 0.225];
+    shotTimes.forEach((delay, index) => {
+      // 每发先响一声短促的金属撞针，再接枪口爆音。
+      this.filteredNoise(ctx, {
+        type: 'bandpass', frequency: 2450, endFrequency: 1800,
+        resonance: 2.8, duration: 0.022, gain: 0.28, delay,
+      });
+      this.filteredNoise(ctx, {
+        frequency: 2200 - index * 140, endFrequency: 500,
+        duration: 0.053, gain: 0.38 - index * 0.04, delay: delay + 0.008,
+      });
+    });
+  }
+
+  playFlakBlast() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    // 双联高射炮的两声闷响紧挨着，后一声略远。
+    this.filteredNoise(ctx, { frequency: 780, endFrequency: 230, duration: 0.15, gain: 0.66 });
+    this.filteredNoise(ctx, {
+      frequency: 630, endFrequency: 150, duration: 0.19, gain: 0.52, delay: 0.065,
+    });
+    this.tone({
+      freq: 151, endFreq: 69, duration: 0.14, gain: 0.17, delay: 0.018, output: this.battleOutput(ctx),
+    });
   }
 
   playShield() {

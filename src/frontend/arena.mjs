@@ -722,7 +722,15 @@ export class BattleArena {
       }
 
       this.syncSwarmCasualties();
-      sfx.playHit(ev.isCrit || ev.isAerialBonus);
+      if (ev.itemId === 'heavy_mg') {
+        sfx.playMgBurst();
+      } else if (ev.itemId === 'flak_cannon') {
+        sfx.playFlakBlast();
+      } else if (ev.itemId === 'howitzer_155' || ev.itemId === 'katyusha_mlrs' || ev.itemId === 'heavy_tank') {
+        sfx.playCannonBlast();
+      } else {
+        sfx.playHit(ev.isCrit || ev.isAerialBonus);
+      }
       this.callbacks.onItemTrigger?.(ev.instanceId);
     } else if (ev.type === 'shield_gain') {
       this.wallHealGlow = 0.45;

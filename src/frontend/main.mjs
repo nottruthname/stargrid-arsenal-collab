@@ -63,6 +63,10 @@ function analyzePolyomino(cells) {
   };
 }
 
+function displayItemDescription(item) {
+  return item.description.replace('L型', '曲尺形');
+}
+
 function renderCodexModalHtml() {
   return `
     <div class="modal-backdrop" id="codex-backdrop">
@@ -85,7 +89,7 @@ function renderCodexModalHtml() {
                 <span>${item.name} · ${CATEGORY_META[item.category].label}（${RARITY_META[item.rarity].label}）</span>
                 <span style="color:#fbbf24;">${item.cost} 军费</span>
               </div>
-              <div style="font-size:11px;color:#d7ccb4;margin-top:2px;">${item.description}</div>
+              <div style="font-size:11px;color:#d7ccb4;margin-top:2px;">${displayItemDescription(item)}</div>
               <div style="font-size:11px;color:#fcd34d;margin-top:2px;">连携：${item.synergyDesc}</div>
             </div>
           </div>`;
@@ -613,7 +617,7 @@ function bootPlayableGame() {
       if (stats.effectiveHeal > 0) parts.push(`抢修 ${stats.effectiveHeal}`);
       if (stats.effectiveCooldownSec > 0) parts.push(`装填 ${stats.effectiveCooldownSec}秒`);
       if (stats.synergyTags.length > 0) parts.push(stats.synergyTags.join(' · '));
-      statText = parts.join(' | ') || def.description;
+      statText = parts.join(' | ') || displayItemDescription(def);
     }
 
     inspectorBarEl.innerHTML = `
@@ -787,7 +791,10 @@ function bootPlayableGame() {
             ${uiIcon(offer.locked ? 'lock' : 'unlock', 10)}
           </button>
         </div>
-        ${getItemSvg(offer.itemId, 44)}
+        <div class="shop-card-art">
+          ${getItemSvg(offer.itemId, 44)}
+          <span class="shop-category-stamp">${CATEGORY_META[def.category].label}</span>
+        </div>
         <div class="shop-name">${def.name}</div>
         <div class="shop-cost num-tabular ${!affordable ? 'lack' : ''}">${offer.sold ? '已调拨' : `${offer.cost} 军费`}</div>
       `;
@@ -917,10 +924,13 @@ function bootPlayableGame() {
       modalRootEl.innerHTML = `
         <div class="modal-backdrop">
           <div class="modal-card">
-            <h2 class="modal-title" style="color:${rep.won ? '#bef264' : '#fca5a5'};">
-              <span>${rep.won ? `第 ${rep.wave} 波 · 兽潮击溃` : '防线被突破（完整度 -1）'}</span>
-              <span style="font-size:11px;color:#cbbda0;">历时 ${rep.durationSec.toFixed(1)} 秒</span>
-            </h2>
+            <header class="battle-report-header">
+              <div>
+                <h2 class="modal-title">${rep.won ? `第 ${rep.wave} 波 · 兽潮击溃` : '防线被突破（完整度 -1）'}</h2>
+                <div class="battle-report-duration num-tabular">历时 ${rep.durationSec.toFixed(1)} 秒</div>
+              </div>
+              <span class="battle-report-stamp" aria-hidden="true">${rep.won ? '胜捷' : '失守'}</span>
+            </header>
             <div style="display:flex;gap:6px;flex-wrap:wrap;" class="num-tabular">
               <span class="hud-tag credits">+${rep.goldEarned} 军费${rep.interestEarned ? `（含公债利息 +${rep.interestEarned}）` : ''}</span>
               <span class="hud-tag">总输出 ${rep.totalDamageDealt}</span>

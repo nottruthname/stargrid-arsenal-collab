@@ -1,3 +1,9 @@
+/**
+ * 《铁血防线：1944》确定性后端核心引擎
+ * - 100% 遵循 shared/protocol.mjs 前后端契约
+ * - 不可变状态更新 + Mulberry32 确定性随机数 + 空间排序稳定模拟
+ */
+
 import {
   BASE_REFRESH_COST,
   BATTLE_TICK_SEC,
@@ -15,6 +21,7 @@ import {
   OVERTIME_START_SEC,
   PLAYER_BASE_MAX_HP,
   RARITY_META,
+  RELIC_CATALOG,
   RELIC_IDS,
   RELIC_WAVE_MILESTONES,
   SHOP_SLOTS,
@@ -23,562 +30,1068 @@ import {
 
 export const IS_BACKEND_IMPLEMENTED = true;
 
-const ROTATION_OFFSETS = [
-  [0, 0], [0, -1], [-1, 0], [0, 1], [1, 0],
-  [-1, -1], [1, -1], [-1, 1], [1, 1], [0, -2], [-2, 0],
-];
-const BATTERY_BONUSES = [0, 0.25, 0.45, 0.7];
-const SOLAR_BONUSES = [0, 0.35, 0.6, 0.95];
-
-const shopPools = Object.values(RARITY_META).map(({ id, weight }) => ({
-  weight,
-  items: ITEM_IDS.filter((itemId) => ITEM_CATALOG[itemId].rarity === id),
-}));
-const shopWeight = shopPools.reduce((sum, pool) => sum + pool.weight, 0);
-
-function createRng(seed) {
-  let state = seed >>> 0;
+function nextRng(rngState) {
+  let t = (rngState + 0x6d2b79f5) >>> 0;
+  let r = Math.imul(t ^ (t >>> 15), 1 | t);
+  r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
   return {
-    get state() { return state; },
-    next() {
-      state = (state + 0x6d2b79f5) >>> 0;
-      let bits = Math.imul(state ^ (state >>> 15), state | 1);
-      bits ^= bits + Math.imul(bits ^ (bits >>> 7), bits | 61);
-      return ((bits ^ (bits >>> 14)) >>> 0) / 0x100000000;
-    },
+    value: ((r ^ (r >>> 14)) >>> 0) / 4294967296,
+    rngState: t,
   };
 }
 
-function refillShop(state) {
-  const rng = createRng(state.rngState);
-  state.shopOffers = Array.from({ length: SHOP_SLOTS }, (_, slotIndex) => {
-    const offer = state.shopOffers[slotIndex];
-    if (offer?.locked && !offer.sold) return offer;
+function rollShopOffers(rngState, prevOffers = null, honorLock = false) {
+  let curRng = rngState >>> 0;
+  const totalWeight = ITEM_IDS.reduce((sum, id) => sum + RARITY_META[ITEM_CATALOG[id].rarity].weight, 0);
+  const offers = [];
 
-    let roll = rng.next() * shopWeight;
-    for (const { weight, items } of shopPools) {
-      if (roll < weight) {
-        const itemId = items[Math.floor((roll / weight) * items.length)];
-        return { slotIndex, itemId, cost: ITEM_CATALOG[itemId].cost, sold: false, locked: false };
-      }
-      roll -= weight;
+  for (let i = 0; i < SHOP_SLOTS; i++) {
+    const prev = prevOffers?.[i];
+    if (honorLock && prev && prev.locked && !prev.sold) {
+      offers.push({ ...prev, slotIndex: i });
+      continue;
     }
+    const step = nextRng(curRng);
+    curRng = step.rngState;
+    let pickRoll = step.value * totalWeight;
+    let chosenId = ITEM_IDS[0];
+    for (const id of ITEM_IDS) {
+      pickRoll -= RARITY_META[ITEM_CATALOG[id].rarity].weight;
+      if (pickRoll <= 0) {
+        chosenId = id;
+        break;
+      }
+    }
+    offers.push({
+      slotIndex: i,
+      itemId: chosenId,
+      cost: ITEM_CATALOG[chosenId].cost,
+      sold: false,
+      locked: false,
+    });
+  }
+
+  // 若 3 个槽位均被锁定，依然步进 1 次随机状态，防止波次重试时随机流冻结
+  if (curRng === (rngState >>> 0)) {
+    curRng = nextRng(curRng).rngState;
+  }
+
+  return { shopOffers: offers, rngState: curRng };
+}
+
+function cloneState(state) {
+  return structuredClone(state);
+}
+
+function isPrepPhase(state) {
+  return state && state.phase === 'prep';
+}
+
+export function getOccupiedCells(itemId, row, col, rotation = 0) {
+  const def = ITEM_CATALOG[itemId];
+  if (!def) throw new Error(`未知卡牌: ${itemId}`);
+
+  const normRot = ((Number(rotation) || 0) % 360 + 360) % 360;
+  if (![0, 90, 180, 270].includes(normRot)) {
+    throw new Error('卡牌旋转角度必须为 90 的倍数');
+  }
+  const steps = normRot / 90;
+
+  const rotated = def.baseCells.map(([br, bc]) => {
+    let r = br;
+    let c = bc;
+    for (let i = 0; i < steps; i++) {
+      const nr = c;
+      const nc = -r;
+      r = nr;
+      c = nc;
+    }
+    return [r, c];
   });
-  state.rngState = rng.state;
+
+  let minR = Infinity;
+  let minC = Infinity;
+  for (const [r, c] of rotated) {
+    if (r < minR) minR = r;
+    if (c < minC) minC = c;
+  }
+
+  return rotated
+    .map(([r, c]) => [row + (r - minR), col + (c - minC)])
+    .sort((a, b) => (a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]));
 }
 
 export function createInitialState(seed = 20261124) {
-  const state = {
-    seed: seed >>> 0,
-    rngState: seed >>> 0,
-    nextInstanceSeq: 2,
+  const initialRng = (seed >>> 0) || 1;
+  const rolled = rollShopOffers(initialRng, null, false);
+  const starterDef = ITEM_CATALOG.infantry_squad;
+  return {
+    seed: initialRng,
+    rngState: rolled.rngState,
     wave: 1,
     phase: 'prep',
     gold: INITIAL_GOLD,
     lives: INITIAL_LIVES,
     playerMaxHp: PLAYER_BASE_MAX_HP,
-    refreshCountThisWave: 0,
     refreshCost: BASE_REFRESH_COST,
-    placedItems: [{
-      instanceId: 'item_1',
-      itemId: 'plasma_dagger',
-      level: 1,
-      row: 2,
-      col: 2,
-      rotation: 0,
-      investedGold: ITEM_CATALOG.plasma_dagger.cost,
-    }],
+    shopOffers: rolled.shopOffers,
+    placedItems: [
+      {
+        instanceId: 'unit_starter_1',
+        itemId: 'infantry_squad',
+        level: 1,
+        row: 2,
+        col: 2,
+        rotation: 0,
+        investedGold: starterDef.cost,
+      },
+    ],
     stashItems: [],
-    shopOffers: [],
     relics: [],
     pendingRelicChoices: [],
+    nextInstanceSeq: 2,
+    refreshCountInWave: 0,
     lastBattleReport: null,
   };
-  refillShop(state);
-  return state;
 }
 
-function normalizeRotation(rotation) {
-  if (!Number.isInteger(rotation) || rotation % 90 !== 0) {
-    throw new Error('装备只能以 90° 为单位旋转');
-  }
-  return ((rotation % 360) + 360) % 360;
-}
-
-export function getOccupiedCells(itemId, row, col, rotation = 0) {
-  if (!Object.hasOwn(ITEM_CATALOG, itemId)) throw new Error('未知装备');
-  let cells = ITEM_CATALOG[itemId].baseCells;
-  const turns = normalizeRotation(rotation) / 90;
-  for (let turn = 0; turn < turns; turn++) {
-    cells = cells.map(([r, c]) => [c, -r]);
-  }
-  const minRow = Math.min(...cells.map(([r]) => r));
-  const minCol = Math.min(...cells.map(([, c]) => c));
-  return cells.map(([r, c]) => [row + (r - minRow), col + (c - minCol)])
-    .sort(([a, b], [c, d]) => a - c || b - d);
-}
-
-function itemCells(item) {
-  return getOccupiedCells(item.itemId, item.row, item.col, item.rotation);
-}
-
-function canMerge(source, target) {
-  return source.itemId === target.itemId &&
-    source.level === target.level && target.level < MAX_ITEM_LEVEL;
-}
-
-export function validatePlacement(state, {
-  itemId, level = 1, row, col, rotation = 0, ignoreInstanceId = null,
-}) {
+export function validatePlacement(state, candidate) {
+  const { itemId, level = 1, row, col, rotation = 0, ignoreInstanceId = null } = candidate;
   const occupiedCells = getOccupiedCells(itemId, row, col, rotation);
-  const result = { occupiedCells, overlappingInstanceIds: [], mergeTargetInstanceId: null };
-  if (occupiedCells.some(([r, c]) =>
-    !Number.isInteger(r) || !Number.isInteger(c) || r < 0 || r >= GRID_ROWS || c < 0 || c >= GRID_COLS
-  )) {
-    return { ...result, valid: false, reason: 'out_of_bounds' };
-  }
 
-  const overlaps = state.placedItems.filter((item) =>
-    item.instanceId !== ignoreInstanceId &&
-    itemCells(item).some(([r, c]) => occupiedCells.some(([a, b]) => r === a && c === b))
+  const outOfBounds = occupiedCells.some(
+    ([r, c]) => r < 0 || r >= GRID_ROWS || c < 0 || c >= GRID_COLS
   );
-  result.overlappingInstanceIds = overlaps.map((item) => item.instanceId);
-  if (overlaps.length === 0) return { ...result, valid: true, reason: 'ok' };
-  if (overlaps.length === 1 && canMerge({ itemId, level }, overlaps[0])) {
-    return { ...result, valid: true, reason: 'merge', mergeTargetInstanceId: overlaps[0].instanceId };
-  }
-  return { ...result, valid: false, reason: 'overlap' };
-}
-
-function cloneForPrep(state) {
-  if (state.phase !== 'prep') throw new Error('当前不在整备阶段');
-  return structuredClone(state);
-}
-
-function getOffer(state, slotIndex) {
-  const offer = state.shopOffers.find((entry) => entry.slotIndex === slotIndex);
-  if (!offer || offer.sold) throw new Error('该商店槽位没有可用装备');
-  return offer;
-}
-
-function locateItem(state, instanceId) {
-  for (const items of [state.placedItems, state.stashItems]) {
-    const index = items.findIndex((item) => item.instanceId === instanceId);
-    if (index >= 0) return { items, index, item: items[index] };
-  }
-  throw new Error('找不到这件装备');
-}
-
-function mergeInto(target, source) {
-  target.level++;
-  target.investedGold += source.investedGold;
-}
-
-function putOnGrid(state, item, { row, col, rotation = item.rotation }, source = null) {
-  const check = validatePlacement(state, { ...item, row, col, rotation, ignoreInstanceId: item.instanceId });
-  if (!check.valid) {
-    throw new Error(check.reason === 'out_of_bounds' ? '装备超出网格边界' : '装备与网格内的装备重叠');
-  }
-  if (check.mergeTargetInstanceId) {
-    const target = state.placedItems.find((entry) => entry.instanceId === check.mergeTargetInstanceId);
-    mergeInto(target, item);
-    if (source) source.items.splice(source.index, 1);
-    return;
+  if (outOfBounds) {
+    return {
+      valid: false,
+      reason: 'out_of_bounds',
+      occupiedCells,
+      overlappingInstanceIds: [],
+      mergeTargetInstanceId: null,
+    };
   }
 
-  const placed = { ...item, row, col, rotation: normalizeRotation(rotation) };
-  if (source?.items === state.placedItems) {
-    source.items[source.index] = placed;
-  } else {
-    if (source) source.items.splice(source.index, 1);
-    state.placedItems.push(placed);
+  const cellKeys = new Set(occupiedCells.map(([r, c]) => `${r},${c}`));
+  const overlappingItems = [];
+
+  for (const placed of state.placedItems) {
+    if (placed.instanceId === ignoreInstanceId) continue;
+    const pCells = getOccupiedCells(placed.itemId, placed.row, placed.col, placed.rotation);
+    if (pCells.some(([r, c]) => cellKeys.has(`${r},${c}`))) {
+      overlappingItems.push(placed);
+    }
   }
-}
 
-function putInStash(state, item) {
-  if (state.stashItems.length >= MAX_STASH_SLOTS) throw new Error('暂存舱已满');
-  const { instanceId, itemId, level, rotation, investedGold } = item;
-  state.stashItems.push({ instanceId, itemId, level, rotation, investedGold });
-}
+  const overlappingInstanceIds = overlappingItems.map((p) => p.instanceId);
+  if (overlappingItems.length === 0) {
+    return {
+      valid: true,
+      reason: 'ok',
+      occupiedCells,
+      overlappingInstanceIds: [],
+      mergeTargetInstanceId: null,
+    };
+  }
 
-export function buyShopItem(state, slotIndex, placement = null) {
-  const next = cloneForPrep(state);
-  const offer = getOffer(next, slotIndex);
-  if (next.gold < offer.cost) throw new Error('金币不足');
+  if (overlappingItems.length === 1) {
+    const target = overlappingItems[0];
+    if (target.itemId === itemId && target.level === level && level < MAX_ITEM_LEVEL) {
+      return {
+        valid: true,
+        reason: 'merge',
+        occupiedCells,
+        overlappingInstanceIds,
+        mergeTargetInstanceId: target.instanceId,
+      };
+    }
+  }
 
-  const item = {
-    instanceId: 'item_' + next.nextInstanceSeq++,
-    itemId: offer.itemId,
-    level: 1,
-    rotation: 0,
-    investedGold: offer.cost,
+  return {
+    valid: false,
+    reason: overlappingItems.length === 1 && overlappingItems[0].level >= MAX_ITEM_LEVEL ? 'max_level' : 'collision',
+    occupiedCells,
+    overlappingInstanceIds,
+    mergeTargetInstanceId: null,
   };
-  if (placement && placement.toGrid !== false) putOnGrid(next, item, placement);
-  else putInStash(next, item);
-  next.gold -= offer.cost;
-  offer.sold = true;
-  offer.locked = false;
+}
+
+export function buyShopItem(state, slotIndex, targetPlacement = null) {
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const offer = state.shopOffers[slotIndex];
+  if (!offer || offer.sold) throw new Error('该补给槽位暂无可用军械');
+  if (state.gold < offer.cost) throw new Error('军费不足');
+
+  const next = cloneState(state);
+  const nextOffer = next.shopOffers[slotIndex];
+  const newInstanceId = `unit_${next.nextInstanceSeq++}`;
+
+  if (targetPlacement === null) {
+    if (next.stashItems.length >= MAX_STASH_SLOTS) {
+      throw new Error('备战区已满');
+    }
+    next.gold -= nextOffer.cost;
+    nextOffer.sold = true;
+    nextOffer.locked = false;
+    next.stashItems.push({
+      instanceId: newInstanceId,
+      itemId: nextOffer.itemId,
+      level: 1,
+      rotation: 0,
+      investedGold: nextOffer.cost,
+    });
+    return next;
+  }
+
+  const { row, col, rotation = 0 } = targetPlacement;
+  const check = validatePlacement(next, {
+    itemId: nextOffer.itemId,
+    level: 1,
+    row,
+    col,
+    rotation,
+  });
+  if (!check.valid) {
+    throw new Error(check.reason === 'out_of_bounds' ? '超出作战沙盘边界' : '目标格位已被其他单位占用');
+  }
+
+  next.gold -= nextOffer.cost;
+  nextOffer.sold = true;
+  nextOffer.locked = false;
+
+  if (check.mergeTargetInstanceId) {
+    const target = next.placedItems.find((p) => p.instanceId === check.mergeTargetInstanceId);
+    target.level += 1;
+    target.investedGold += nextOffer.cost;
+  } else {
+    next.placedItems.push({
+      instanceId: newInstanceId,
+      itemId: nextOffer.itemId,
+      level: 1,
+      row,
+      col,
+      rotation,
+      investedGold: nextOffer.cost,
+    });
+  }
+
   return next;
 }
 
-export function placeOrMoveItem(state, { instanceId, toGrid, row, col, rotation, targetStashInstanceId }) {
-  const next = cloneForPrep(state);
-  const source = locateItem(next, instanceId);
-  const { item, items, index } = source;
-  if (toGrid) {
-    putOnGrid(next, item, { row, col, rotation }, source);
-  } else if (targetStashInstanceId != null && targetStashInstanceId !== instanceId) {
-    const target = next.stashItems.find((entry) => entry.instanceId === targetStashInstanceId);
-    if (!target || !canMerge(item, target)) throw new Error('只有同种同星级且未满星的装备可以合成');
-    mergeInto(target, item);
-    items.splice(index, 1);
-  } else if (items === next.placedItems) {
-    putInStash(next, item);
-    items.splice(index, 1);
+export function placeOrMoveItem(state, moveOp) {
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const { instanceId, toGrid, row = 0, col = 0, rotation = 0, targetStashInstanceId = null } = moveOp;
+
+  const next = cloneState(state);
+  const gridIdx = next.placedItems.findIndex((p) => p.instanceId === instanceId);
+  const stashIdx = next.stashItems.findIndex((s) => s.instanceId === instanceId);
+  if (gridIdx === -1 && stashIdx === -1) {
+    throw new Error('未找到指定部队单位');
   }
+
+  const moving = gridIdx !== -1 ? next.placedItems[gridIdx] : next.stashItems[stashIdx];
+
+  if (!toGrid) {
+    if (targetStashInstanceId && targetStashInstanceId !== instanceId) {
+      const target = next.stashItems.find((s) => s.instanceId === targetStashInstanceId);
+      if (!target || target.itemId !== moving.itemId || target.level !== moving.level || target.level >= MAX_ITEM_LEVEL) {
+        throw new Error('仅同兵种同星级且未满星的卡牌可合成');
+      }
+      target.level += 1;
+      target.investedGold += moving.investedGold;
+      if (gridIdx !== -1) next.placedItems.splice(gridIdx, 1);
+      else next.stashItems.splice(stashIdx, 1);
+      return next;
+    }
+
+    if (stashIdx !== -1) {
+      return next;
+    }
+    if (next.stashItems.length >= MAX_STASH_SLOTS) {
+      throw new Error('备战区已满');
+    }
+    next.placedItems.splice(gridIdx, 1);
+    next.stashItems.push({
+      instanceId: moving.instanceId,
+      itemId: moving.itemId,
+      level: moving.level,
+      rotation: moving.rotation || 0,
+      investedGold: moving.investedGold,
+    });
+    return next;
+  }
+
+  const check = validatePlacement(next, {
+    itemId: moving.itemId,
+    level: moving.level,
+    row,
+    col,
+    rotation,
+    ignoreInstanceId: moving.instanceId,
+  });
+  if (!check.valid) {
+    throw new Error(check.reason === 'out_of_bounds' ? '超出作战沙盘边界' : '单位部署位置发生冲突');
+  }
+
+  if (gridIdx !== -1) next.placedItems.splice(gridIdx, 1);
+  else next.stashItems.splice(stashIdx, 1);
+
+  if (check.mergeTargetInstanceId) {
+    const target = next.placedItems.find((p) => p.instanceId === check.mergeTargetInstanceId);
+    target.level += 1;
+    target.investedGold += moving.investedGold;
+  } else {
+    next.placedItems.push({
+      instanceId: moving.instanceId,
+      itemId: moving.itemId,
+      level: moving.level,
+      row,
+      col,
+      rotation,
+      investedGold: moving.investedGold,
+    });
+  }
+
   return next;
 }
 
 export function rotateItem(state, instanceId) {
-  const next = cloneForPrep(state);
-  const { item, items } = locateItem(next, instanceId);
-  const rotation = normalizeRotation(item.rotation + 90);
-  if (items === next.stashItems) {
-    item.rotation = rotation;
-    return next;
-  }
-  for (const [dr, dc] of ROTATION_OFFSETS) {
-    const row = item.row + dr;
-    const col = item.col + dc;
-    const check = validatePlacement(next, { ...item, row, col, rotation, ignoreInstanceId: instanceId });
-    if (check.valid && !check.mergeTargetInstanceId) {
-      Object.assign(item, { row, col, rotation });
-      return next;
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const next = cloneState(state);
+  const gridItem = next.placedItems.find((p) => p.instanceId === instanceId);
+  if (gridItem) {
+    const nextRot = ((gridItem.rotation || 0) + 90) % 360;
+    const offsets = [
+      [0, 0],
+      [-1, 0],
+      [0, -1],
+      [1, 0],
+      [0, 1],
+      [-2, 0],
+      [0, -2],
+      [-1, -1],
+    ];
+    for (const [dr, dc] of offsets) {
+      const nr = gridItem.row + dr;
+      const nc = gridItem.col + dc;
+      const check = validatePlacement(next, {
+        itemId: gridItem.itemId,
+        level: gridItem.level,
+        row: nr,
+        col: nc,
+        rotation: nextRot,
+        ignoreInstanceId: gridItem.instanceId,
+      });
+      if (check.valid && !check.mergeTargetInstanceId) {
+        gridItem.row = nr;
+        gridItem.col = nc;
+        gridItem.rotation = nextRot;
+        return next;
+      }
     }
+    throw new Error('周边战壕空间不足，无法旋转卡牌');
   }
-  throw new Error('周围没有足够的空间旋转装备');
-}
 
-export function sellItem(state, instanceId) {
-  const next = cloneForPrep(state);
-  const { item, items, index } = locateItem(next, instanceId);
-  items.splice(index, 1);
-  next.gold += Math.ceil(item.investedGold * 0.6);
+  const stashItem = next.stashItems.find((s) => s.instanceId === instanceId);
+  if (!stashItem) throw new Error('未找到指定单位');
+  stashItem.rotation = ((stashItem.rotation || 0) + 90) % 360;
   return next;
 }
 
+export function sellItem(state, instanceId) {
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const next = cloneState(state);
+  const gIdx = next.placedItems.findIndex((p) => p.instanceId === instanceId);
+  if (gIdx !== -1) {
+    const [removed] = next.placedItems.splice(gIdx, 1);
+    next.gold += Math.ceil(removed.investedGold * 0.6);
+    return next;
+  }
+  const sIdx = next.stashItems.findIndex((s) => s.instanceId === instanceId);
+  if (sIdx !== -1) {
+    const [removed] = next.stashItems.splice(sIdx, 1);
+    next.gold += Math.ceil(removed.investedGold * 0.6);
+    return next;
+  }
+  throw new Error('未找到可撤编单位');
+}
+
 export function toggleLockShopSlot(state, slotIndex) {
-  const next = cloneForPrep(state);
-  const offer = getOffer(next, slotIndex);
-  offer.locked = !offer.locked;
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const next = cloneState(state);
+  const offer = next.shopOffers[slotIndex];
+  if (!offer) throw new Error('无效的补给槽位');
+  if (!offer.sold) {
+    offer.locked = !offer.locked;
+  }
   return next;
 }
 
 export function refreshShop(state) {
-  const next = cloneForPrep(state);
-  if (next.gold < next.refreshCost) throw new Error('金币不足');
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  if (state.gold < state.refreshCost) throw new Error('军费不足');
+  const next = cloneState(state);
   next.gold -= next.refreshCost;
-  refillShop(next);
-  next.refreshCountThisWave++;
-  next.refreshCost = BASE_REFRESH_COST + Math.floor(next.refreshCountThisWave / 2);
+  next.refreshCountInWave += 1;
+  next.refreshCost = BASE_REFRESH_COST + Math.floor(next.refreshCountInWave / 2);
+  const rolled = rollShopOffers(next.rngState, next.shopOffers, true);
+  next.shopOffers = rolled.shopOffers;
+  next.rngState = rolled.rngState;
   return next;
 }
 
-function itemCategory(item) {
-  return ITEM_CATALOG[item.itemId].category;
-}
+function getPairRelation(a, b) {
+  const idA = a.itemId;
+  const idB = b.itemId;
+  const catA = ITEM_CATALOG[idA].category;
+  const catB = ITEM_CATALOG[idB].category;
 
-function hasDirectedSynergy(item, neighbor) {
-  const category = itemCategory(item);
-  const neighborCategory = itemCategory(neighbor);
-  switch (item.itemId) {
-    case 'chrono_battery': return ITEM_CATALOG[neighbor.itemId].cooldownSec > 0;
-    case 'solar_core': return neighborCategory === 'weapon';
-    case 'cryo_plate': return neighborCategory === 'shield';
-    case 'plasma_dagger': return neighborCategory === 'weapon';
-    case 'rail_rifle':
-    case 'nano_medkit': return neighborCategory === 'core';
-    case 'arc_launcher': return neighborCategory === 'core' || neighbor.itemId === 'cryo_plate';
-    case 'aegis_buckler': return neighborCategory === 'weapon' || neighborCategory === category;
-    default: return false;
-  }
-}
-
-function computeItemStats(item, neighbors) {
-  const def = ITEM_CATALOG[item.itemId];
-  const multiplier = LEVEL_MULTIPLIERS[item.level];
-  const cores = neighbors.filter((neighbor) => itemCategory(neighbor) === 'core');
-  const weapons = neighbors.filter((neighbor) => itemCategory(neighbor) === 'weapon');
-  const shields = neighbors.filter((neighbor) => itemCategory(neighbor) === 'shield');
-  const solar = cores.filter((neighbor) => neighbor.itemId === 'solar_core');
-  const cryo = shields.filter((neighbor) => neighbor.itemId === 'cryo_plate');
-  const batteryBonus = cores.reduce((sum, neighbor) =>
-    sum + (neighbor.itemId === 'chrono_battery' ? BATTERY_BONUSES[neighbor.level] : 0), 0);
-  const solarBonus = solar.reduce((sum, neighbor) => sum + SOLAR_BONUSES[neighbor.level], 0);
-  const isWeapon = def.category === 'weapon';
-  const railBonus = item.itemId === 'rail_rifle' ? cores.length : 0;
-  const bucklerBonus = item.itemId === 'aegis_buckler' ? 4 * (weapons.length + shields.length) : 0;
-  const medkitBonus = item.itemId === 'nano_medkit' ? 5 * cores.length : 0;
-  const daggerFactor = item.itemId === 'plasma_dagger' ? Math.max(0.45, 1 - 0.12 * weapons.length) : 1;
-  const synergyTags = new Set();
-  for (const neighbor of neighbors) {
-    if (hasDirectedSynergy(neighbor, item) || hasDirectedSynergy(item, neighbor)) {
-      synergyTags.add(ITEM_CATALOG[neighbor.itemId].name);
-    }
-  }
-
-  return {
-    neighborIds: neighbors.map((neighbor) => neighbor.instanceId),
-    synergyTags: [...synergyTags],
-    effectiveCooldownSec: def.cooldownSec === 0 ? 0
-      : Number(Math.max(0.45, def.cooldownSec / (1 + batteryBonus) * daggerFactor).toFixed(2)),
-    effectiveDamage: Math.round((def.baseDamage + 6 * railBonus) * multiplier * (1 + solarBonus)),
-    effectiveShield: Math.round((def.baseShield * multiplier + bucklerBonus) * (1 + 0.25 * cryo.length)),
-    effectiveHeal: Math.round(def.baseHeal * multiplier + medkitBonus),
-    critChance: Math.min(0.95, def.critChance + 0.2 * railBonus),
-    critMultiplier: def.critMultiplier,
-    burnOnHit: isWeapon ? solar.length : 0,
-    shockOnHit: item.itemId === 'arc_launcher' ? 2 + cores.length + cryo.length : 0,
-    chillOnTrigger: item.itemId === 'cryo_plate' ? 1 : 0,
+  const affects = (src, dst) => {
+    const sId = src.itemId;
+    const dId = dst.itemId;
+    const dCat = ITEM_CATALOG[dId].category;
+    const dActive = ITEM_CATALOG[dId].cooldownSec > 0;
+    if (sId === 'ammo_depot' && dActive) return true;
+    if (sId === 'command_radio' && dActive && ITEM_CATALOG[dId].baseDamage > 0) return true;
+    if (sId === 'heavy_tank' && (dCat === 'infantry' || dCat === 'firepower' || dId === 'concrete_bunker')) return true;
+    if (dId === 'infantry_squad' && (catA === 'infantry' || catA === 'armor') && src === a) return true;
+    if (sId === 'infantry_squad' && (catB === 'infantry' || catB === 'armor') && dst === a) return false;
+    if (dId === 'heavy_mg' && (catA === 'infantry' || catA === 'support') && src === a) return true;
+    if (dId === 'flak_cannon' && (catA === 'artillery' || catA === 'support') && src === a) return true;
+    if (dId === 'howitzer_155' && catA === 'support' && src === a) return true;
+    if (dId === 'katyusha_mlrs' && (catA === 'artillery' || catA === 'support') && src === a) return true;
+    if (dId === 'dive_bomber' && (sId === 'command_radio' || catA === 'airforce') && src === a) return true;
+    if (dId === 'concrete_bunker' && (catA === 'infantry' || catA === 'armor') && src === a) return true;
+    return false;
   };
+
+  return affects(a, b) || affects(b, a);
 }
 
 export function computeGridSynergies(state) {
-  const items = state.placedItems.map((item) => ({ item, cells: itemCells(item), neighbors: [] }));
+  const placed = [...state.placedItems].sort((a, b) =>
+    a.row !== b.row ? a.row - b.row : a.col !== b.col ? a.col - b.col : a.instanceId.localeCompare(b.instanceId)
+  );
+  const cellMap = new Map();
+  const occupiedByItem = new Map();
+
+  for (const item of placed) {
+    const cells = getOccupiedCells(item.itemId, item.row, item.col, item.rotation);
+    occupiedByItem.set(item.instanceId, cells);
+    for (const [r, c] of cells) {
+      cellMap.set(`${r},${c}`, item);
+    }
+  }
+
+  const neighborSets = new Map();
+  for (const item of placed) {
+    neighborSets.set(item.instanceId, new Set());
+  }
+
+  const dirs = [
+    [-1, 0],
+    [1, 0],
+    [0, -1],
+    [0, 1],
+  ];
+
+  for (const item of placed) {
+    const cells = occupiedByItem.get(item.instanceId);
+    const nSet = neighborSets.get(item.instanceId);
+    for (const [r, c] of cells) {
+      for (const [dr, dc] of dirs) {
+        const nb = cellMap.get(`${r + dr},${c + dc}`);
+        if (nb && nb.instanceId !== item.instanceId) {
+          nSet.add(nb.instanceId);
+        }
+      }
+    }
+  }
+
+  const itemById = new Map(placed.map((p) => [p.instanceId, p]));
   const links = [];
-  for (let i = 0; i < items.length; i++) {
-    const a = items[i];
-    for (let j = i + 1; j < items.length; j++) {
-      const b = items[j];
-      if (!a.cells.some(([r, c]) => b.cells.some(([s, t]) => Math.abs(r - s) + Math.abs(c - t) === 1))) continue;
-      a.neighbors.push(b.item);
-      b.neighbors.push(a.item);
+  const seenPairs = new Set();
+
+  for (const a of placed) {
+    for (const nbId of neighborSets.get(a.instanceId)) {
+      const pairKey = a.instanceId < nbId ? `${a.instanceId}|${nbId}` : `${nbId}|${a.instanceId}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+      const b = itemById.get(nbId);
+      const active = getPairRelation(a, b);
       links.push({
-        fromInstanceId: a.item.instanceId,
-        toInstanceId: b.item.instanceId,
-        active: hasDirectedSynergy(a.item, b.item) || hasDirectedSynergy(b.item, a.item),
+        fromInstanceId: a.instanceId,
+        toInstanceId: b.instanceId,
+        active,
+        type: 'synergy',
       });
     }
   }
+
+  const itemStats = {};
+  let estimatedDps = 0;
+  let estimatedShieldPerSec = 0;
+  const hasAirRelic = (state.relics || []).includes('aerial_supremacy');
+
+  for (const item of placed) {
+    const def = ITEM_CATALOG[item.itemId];
+    const mult = LEVEL_MULTIPLIERS[item.level] || 1;
+    const neighborIds = [...neighborSets.get(item.instanceId)];
+    const neighbors = neighborIds.map((id) => itemById.get(id));
+    const synergyTags = [];
+
+    let dmg = def.baseDamage > 0 ? def.baseDamage * mult : 0;
+    let shield = def.baseShield > 0 ? def.baseShield * mult : 0;
+    let heal = def.baseHeal > 0 ? def.baseHeal * mult : 0;
+    let cd = def.cooldownSec;
+    let critChance = def.critChance + (hasAirRelic && def.baseDamage > 0 ? 0.1 : 0);
+    let burnOnHit = item.itemId === 'howitzer_155' ? 2 : 0;
+    let breakOnHit = item.itemId === 'katyusha_mlrs' ? 2 : 0;
+    let suppressOnHit = item.itemId === 'heavy_mg' ? 1 : 0;
+
+    let speedMult = 1.0;
+    let dmgBonusPct = 0;
+    let armorBonusPct = 0;
+
+    for (const nb of neighbors) {
+      if (nb.itemId === 'ammo_depot' && def.cooldownSec > 0) {
+        const bonus = nb.level === 3 ? 0.7 : nb.level === 2 ? 0.45 : 0.25;
+        speedMult += bonus;
+        synergyTags.push(`弹药加速+${Math.round(bonus * 100)}%`);
+      }
+      if (nb.itemId === 'command_radio' && def.cooldownSec > 0 && def.baseDamage > 0) {
+        const bonus = nb.level === 3 ? 0.9 : nb.level === 2 ? 0.55 : 0.3;
+        dmgBonusPct += bonus;
+        breakOnHit += 1;
+        synergyTags.push(`电台校准+${Math.round(bonus * 100)}%伤/+1破甲`);
+      }
+      if (nb.itemId === 'heavy_tank' && (def.category === 'infantry' || def.category === 'firepower' || item.itemId === 'concrete_bunker')) {
+        dmgBonusPct += 0.2;
+        armorBonusPct += 0.2;
+        synergyTags.push('重坦协同+20%攻防');
+      }
+    }
+
+    if (item.itemId === 'infantry_squad') {
+      const cnt = neighbors.filter((n) => {
+        const c = ITEM_CATALOG[n.itemId].category;
+        return c === 'infantry' || c === 'armor';
+      }).length;
+      if (cnt > 0) {
+        cd = Math.max(0.45, cd * Math.pow(0.88, cnt));
+        synergyTags.push(`集结快射×${cnt}`);
+      }
+    } else if (item.itemId === 'heavy_mg') {
+      const cnt = neighbors.filter((n) => {
+        const c = ITEM_CATALOG[n.itemId].category;
+        return c === 'infantry' || c === 'support';
+      }).length;
+      if (cnt > 0) {
+        dmg += 3 * cnt;
+        suppressOnHit += cnt;
+        synergyTags.push(`交叉火网+${cnt}压制`);
+      }
+    } else if (item.itemId === 'flak_cannon') {
+      const cnt = neighbors.filter((n) => {
+        const c = ITEM_CATALOG[n.itemId].category;
+        return c === 'artillery' || c === 'support';
+      }).length;
+      if (cnt > 0) {
+        critChance = Math.min(0.95, critChance + cnt * 0.15);
+        synergyTags.push(`防空标定+${cnt * 15}%暴击`);
+      }
+    } else if (item.itemId === 'howitzer_155') {
+      const cnt = neighbors.filter((n) => ITEM_CATALOG[n.itemId].category === 'support').length;
+      if (cnt > 0) {
+        dmg += 5 * cnt;
+        burnOnHit += cnt;
+        synergyTags.push(`高爆装药+${5 * cnt}伤/+${cnt}燃`);
+      }
+    } else if (item.itemId === 'katyusha_mlrs') {
+      const cnt = neighbors.filter((n) => {
+        const c = ITEM_CATALOG[n.itemId].category;
+        return c === 'artillery' || c === 'support';
+      }).length;
+      if (cnt > 0) {
+        dmgBonusPct += cnt * 0.18;
+        breakOnHit += cnt;
+        synergyTags.push(`炮群齐射+${cnt * 18}%伤/+${cnt}破甲`);
+      }
+    } else if (item.itemId === 'dive_bomber') {
+      const cnt = neighbors.filter((n) => n.itemId === 'command_radio' || ITEM_CATALOG[n.itemId].category === 'airforce').length;
+      if (cnt > 0) {
+        critChance = Math.min(0.95, critChance + cnt * 0.2);
+        synergyTags.push(`航空指引+${cnt * 20}%暴击`);
+      }
+    } else if (item.itemId === 'concrete_bunker') {
+      const cnt = neighbors.filter((n) => {
+        const c = ITEM_CATALOG[n.itemId].category;
+        return c === 'infantry' || c === 'armor';
+      }).length;
+      if (cnt > 0) {
+        shield += 5 * cnt;
+        synergyTags.push(`联合工事+${5 * cnt}护甲`);
+      }
+    }
+
+    const effectiveDamage = dmg > 0 ? Math.round(dmg * (1 + dmgBonusPct)) : 0;
+    const effectiveShield = shield > 0 ? Math.round(shield * (1 + armorBonusPct)) : 0;
+    const effectiveHeal = heal > 0 ? Math.round(heal) : 0;
+    const effectiveCooldownSec = cd > 0 ? Number(Math.max(0.45, cd / speedMult).toFixed(2)) : 0;
+    const effectiveCritChance = Number(Math.min(0.95, critChance).toFixed(2));
+
+    itemStats[item.instanceId] = {
+      instanceId: item.instanceId,
+      itemId: item.itemId,
+      level: item.level,
+      neighborIds,
+      synergyTags: [...new Set(synergyTags)],
+      effectiveDamage,
+      effectiveShield,
+      effectiveHeal,
+      effectiveCooldownSec,
+      effectiveCritChance,
+      critMultiplier: def.critMultiplier,
+      burnOnHit,
+      breakOnHit,
+      suppressOnHit,
+    };
+
+    if (effectiveCooldownSec > 0) {
+      if (effectiveDamage > 0) {
+        estimatedDps += (effectiveDamage * (1 + effectiveCritChance * (def.critMultiplier - 1))) / effectiveCooldownSec;
+      }
+      if (effectiveShield > 0) {
+        estimatedShieldPerSec += effectiveShield / effectiveCooldownSec;
+      }
+    }
+  }
+
   return {
     links,
-    itemStats: Object.fromEntries(items.map(({ item, neighbors }) => [
-      item.instanceId, computeItemStats(item, neighbors),
-    ])),
-    summary: { adjacentPairs: links.length, activeLinks: links.filter((link) => link.active).length },
+    itemStats,
+    summary: {
+      estimatedDps: Number(estimatedDps.toFixed(1)),
+      estimatedShieldPerSec: Number(estimatedShieldPerSec.toFixed(1)),
+      activeLinkCount: links.filter((l) => l.active).length,
+    },
   };
 }
 
-const TICKS_PER_SECOND = Math.round(1 / BATTLE_TICK_SEC);
-const OVERTIME_START_TICK = OVERTIME_START_SEC * TICKS_PER_SECOND;
-const MAX_BATTLE_TICKS = MAX_BATTLE_SEC * TICKS_PER_SECOND;
-const COOLDOWN_EPSILON = 1e-9;
-
-function absorbDamage(combatant, damage) {
-  const absorbed = Math.min(combatant.shield, damage);
-  combatant.shield -= absorbed;
-  combatant.hp = Math.max(0, combatant.hp - (damage - absorbed));
-}
-
-function healPlayer(player, amount, maxHp) {
-  const restored = Math.min(maxHp - player.hp, amount);
-  player.hp += restored;
-  return restored;
-}
-
-function selectRelicChoices(state) {
-  const rng = createRng(state.rngState);
-  const pool = RELIC_IDS.filter((id) => !state.relics.includes(id));
-  state.pendingRelicChoices = [];
-  while (pool.length && state.pendingRelicChoices.length < 3) {
-    const index = Math.floor(rng.next() * pool.length);
-    state.pendingRelicChoices.push(pool.splice(index, 1)[0]);
-  }
-  state.rngState = rng.state;
-}
-
 export function simulateBattle(state) {
-  const enemyConfig = WAVE_CONFIGS[state.wave - 1];
-  if (!enemyConfig) throw new Error('无效的波次');
-  const relics = new Set(state.relics);
-  const rng = createRng(state.rngState ^ state.wave);
-  const playerStartShield = relics.has('titanium_hull') ? 25 : 0;
-  const player = { hp: state.playerMaxHp, shield: playerStartShield };
-  const enemy = { hp: enemyConfig.maxHp, shield: enemyConfig.initialShield, burn: 0, shock: 0, chill: 0 };
-  const { itemStats } = computeGridSynergies(state);
-  const equipment = state.placedItems.map(({ instanceId, itemId, level }) => ({
-    stats: itemStats[instanceId],
-    progress: 0,
-    burnStacks: 0,
-    contribution: {
-      instanceId, itemId, level,
-      name: ITEM_CATALOG[itemId].name,
-      color: ITEM_CATALOG[itemId].color,
-      damage: 0,
-      shield: 0,
-      healing: 0,
-    },
-  }));
-  const activeEquipment = equipment.filter(({ stats }) => stats.effectiveCooldownSec > 0);
+  const waveCfg = WAVE_CONFIGS[(state.wave || 1) - 1];
+  if (!waveCfg) throw new Error(`无效波次: ${state.wave}`);
+
+  const synergies = computeGridSynergies(state);
+  const relics = new Set(state.relics || []);
+  const hasBlitz = relics.has('blitz_mobilization');
+  const hasAP = relics.has('armor_piercing_ammo');
+  const hasBastion = relics.has('bastion_fortification');
+  const hasTriage = relics.has('frontline_triage');
+  const hasAirSupremacy = relics.has('aerial_supremacy');
+
+  let playerHp = state.playerMaxHp;
+  const playerMaxHp = state.playerMaxHp;
+  let playerShield = hasBastion ? 25 : 0;
+  const playerStartShield = playerShield;
+
+  let enemyHp = waveCfg.maxHp;
+  const enemyMaxHp = waveCfg.maxHp;
+  let enemyShield = waveCfg.initialShield;
+  let enemyBurn = 0;
+  let enemyBreak = 0;
+  let enemySuppress = 0;
+
+  let rng = (state.rngState ^ (state.wave * 0x9e3779b1)) >>> 0 || 1;
+  const rand = () => {
+    const r = nextRng(rng);
+    rng = r.rngState;
+    return r.value;
+  };
+
+  // 按稳定空间顺序部署主动参战单元
+  const activeUnits = [...state.placedItems]
+    .sort((a, b) => (a.row !== b.row ? a.row - b.row : a.col !== b.col ? a.col - b.col : a.instanceId.localeCompare(b.instanceId)))
+    .filter((p) => ITEM_CATALOG[p.itemId].cooldownSec > 0)
+    .map((p) => {
+      const stats = synergies.itemStats[p.instanceId];
+      const def = ITEM_CATALOG[p.itemId];
+      return {
+        instanceId: p.instanceId,
+        itemId: p.itemId,
+        name: def.name,
+        category: def.category,
+        level: p.level,
+        color: def.color,
+        stats,
+        timer: stats.effectiveCooldownSec,
+        damage: 0,
+        shield: 0,
+        healing: 0,
+      };
+    });
+
   const timeline = [];
-  const shockDamagePerStack = relics.has('high_voltage') ? 2 : 1;
-  let time = 0;
-  let enemyProgress = 0;
+  let enemyAttackTimer = waveCfg.cooldownSec;
+  let burnTickAccum = 0;
+  let stormTickAccum = 0;
   let totalDamageDealt = 0;
   let totalShieldGained = playerStartShield;
-  let totalHealing = 0;
+  let time = 0;
 
-  function record(type, details = {}) {
-    timeline.push({
-      time, type, burnApplied: 0, shockApplied: 0, chillApplied: 0, ...details,
-      playerHp: player.hp, playerShield: player.shield,
-      enemyHp: enemy.hp, enemyShield: enemy.shield,
-      enemyBurn: enemy.burn, enemyShock: enemy.shock, enemyChill: enemy.chill,
-    });
-  }
-
-  for (let tick = 1; tick <= MAX_BATTLE_TICKS && player.hp > 0 && enemy.hp > 0; tick++) {
-    time = tick / TICKS_PER_SECOND;
-    const enemySpeed = 1 - Math.min(0.45, enemy.chill * 0.15);
-    enemyProgress += BATTLE_TICK_SEC * enemySpeed;
-
-    if (tick % (2 * TICKS_PER_SECOND) === 0 && enemy.shock > 0) {
-      enemy.shock--;
-      record('shock_decay');
+  const applyPlayerDamageToEnemy = (rawDmg, armorPiercing = false) => {
+    let remaining = rawDmg;
+    if (!armorPiercing && enemyShield > 0) {
+      const absorbed = Math.min(enemyShield, remaining);
+      enemyShield -= absorbed;
+      remaining -= absorbed;
     }
-    if (tick % TICKS_PER_SECOND === 0 && enemy.burn > 0) {
-      const damage = enemy.burn * 3;
-      absorbDamage(enemy, damage);
-      totalDamageDealt += damage;
-      for (const item of activeEquipment) item.contribution.damage += item.burnStacks * 3;
-      record('burn_tick', { damage });
+    if (remaining > 0) {
+      enemyHp = Math.max(0, enemyHp - remaining);
     }
-    if (enemy.hp === 0) break;
+    totalDamageDealt += rawDmg;
+  };
 
-    if (tick >= OVERTIME_START_TICK && (tick - OVERTIME_START_TICK) % TICKS_PER_SECOND === 0) {
-      const damage = 2 + Math.floor((time - OVERTIME_START_SEC) * 1.5);
-      absorbDamage(player, damage);
-      absorbDamage(enemy, damage);
-      record('overtime_storm', { damage });
-      if (player.hp === 0 || enemy.hp === 0) break;
+  const applyEnemyDamageToPlayer = (dmg) => {
+    let remaining = dmg;
+    if (playerShield > 0) {
+      const absorbed = Math.min(playerShield, remaining);
+      playerShield -= absorbed;
+      remaining -= absorbed;
     }
+    if (remaining > 0) {
+      playerHp = Math.max(0, playerHp - remaining);
+    }
+  };
 
-    const playerSpeed = time <= 4 && relics.has('overclock_chip') ? 1.35 : 1;
-    for (const item of activeEquipment) {
-      const { stats, contribution } = item;
-      item.progress += BATTLE_TICK_SEC * playerSpeed;
-      if (item.progress + COOLDOWN_EPSILON < stats.effectiveCooldownSec) continue;
-      item.progress = Math.max(0, item.progress - stats.effectiveCooldownSec);
-      const source = { instanceId: contribution.instanceId, itemId: contribution.itemId };
+  const totalTicks = Math.round(MAX_BATTLE_SEC / BATTLE_TICK_SEC);
+  for (let tick = 1; tick <= totalTicks; tick++) {
+    time = Number((tick * BATTLE_TICK_SEC).toFixed(1));
+    const blitzMult = hasBlitz && time <= 4.0 ? 1.35 : 1.0;
 
-      if (stats.effectiveDamage > 0) {
-        const isCrit = rng.next() < stats.critChance;
-        const directDamage = Math.round(stats.effectiveDamage * (isCrit ? stats.critMultiplier : 1));
-        const damage = directDamage + enemy.shock * shockDamagePerStack;
-        absorbDamage(enemy, damage);
-        contribution.damage += damage;
-        totalDamageDealt += damage;
-        enemy.burn += stats.burnOnHit;
-        item.burnStacks += stats.burnOnHit;
-        enemy.shock += stats.shockOnHit;
-        const vampHealed = relics.has('vampiric_coil')
-          ? healPlayer(player, Math.max(1, Math.round(damage * 0.12)), state.playerMaxHp)
-          : 0;
-        contribution.healing += vampHealed;
-        totalHealing += vampHealed;
-        record('weapon_hit', {
-          ...source, damage, isCrit, vampHealed, burnApplied: stats.burnOnHit, shockApplied: stats.shockOnHit,
-        });
-      } else if (stats.effectiveShield > 0) {
-        const shieldGained = stats.effectiveShield;
-        player.shield += shieldGained;
-        contribution.shield += shieldGained;
-        totalShieldGained += shieldGained;
-        enemy.chill += stats.chillOnTrigger;
-        record('shield_gain', { ...source, shieldGained, chillApplied: stats.chillOnTrigger });
-      } else if (stats.effectiveHeal > 0) {
-        const healed = healPlayer(player, stats.effectiveHeal, state.playerMaxHp);
-        const shieldGained = Math.floor((stats.effectiveHeal - healed) / 2);
-        player.shield += shieldGained;
-        contribution.healing += healed;
-        contribution.shield += shieldGained;
-        totalHealing += healed;
-        totalShieldGained += shieldGained;
-        record('gadget_heal', { ...source, healed, shieldGained });
+    // 1. 我方参战兵种冷却推进与火力触发
+    for (const unit of activeUnits) {
+      if (enemyHp <= 0 || playerHp <= 0) break;
+      unit.timer -= BATTLE_TICK_SEC * blitzMult;
+      if (unit.timer <= 1e-6) {
+        unit.timer += unit.stats.effectiveCooldownSec;
+
+        if (unit.stats.effectiveDamage > 0) {
+          let dmg = unit.stats.effectiveDamage;
+          let isAerialBonus = false;
+          if (unit.itemId === 'flak_cannon' && (waveCfg.isAerial || waveCfg.isBoss)) {
+            dmg = Math.round(dmg * 1.5);
+            isAerialBonus = true;
+          }
+          if (hasAirSupremacy && (waveCfg.isAerial || waveCfg.isBoss)) {
+            dmg = Math.round(dmg * 1.15);
+          }
+          const isCrit = rand() < unit.stats.effectiveCritChance;
+          if (isCrit) {
+            dmg = Math.round(dmg * unit.stats.critMultiplier);
+          }
+          if (enemyBreak > 0) {
+            dmg += enemyBreak * (hasAP ? 2 : 1);
+          }
+
+          const armorPiercing = unit.itemId === 'dive_bomber';
+          applyPlayerDamageToEnemy(dmg, armorPiercing);
+          unit.damage += dmg;
+
+          if (unit.stats.burnOnHit > 0) enemyBurn += unit.stats.burnOnHit;
+          if (unit.stats.breakOnHit > 0) enemyBreak += unit.stats.breakOnHit;
+          if (unit.stats.suppressOnHit > 0) enemySuppress += unit.stats.suppressOnHit;
+
+          let triageHealed = 0;
+          if (hasTriage) {
+            triageHealed = Math.max(1, Math.floor(dmg * 0.1));
+            const before = playerHp;
+            playerHp = Math.min(playerMaxHp, playerHp + triageHealed);
+            const actual = playerHp - before;
+            unit.healing += actual;
+            triageHealed = actual;
+          }
+
+          timeline.push({
+            time,
+            actor: 'player',
+            type: 'weapon_hit',
+            instanceId: unit.instanceId,
+            itemId: unit.itemId,
+            category: unit.category,
+            damage: dmg,
+            isCrit,
+            isAerialBonus,
+            armorPierced: armorPiercing,
+            vampHealed: triageHealed,
+            burnApplied: unit.stats.burnOnHit,
+            shockApplied: unit.stats.breakOnHit,
+            chillApplied: unit.stats.suppressOnHit,
+            playerHp,
+            playerShield,
+            enemyHp,
+            enemyShield,
+            enemyBurn,
+            enemyShock: enemyBreak,
+            enemyChill: enemySuppress,
+          });
+        }
+
+        if (unit.stats.effectiveShield > 0) {
+          playerShield += unit.stats.effectiveShield;
+          totalShieldGained += unit.stats.effectiveShield;
+          unit.shield += unit.stats.effectiveShield;
+          timeline.push({
+            time,
+            actor: 'player',
+            type: 'shield_gain',
+            instanceId: unit.instanceId,
+            itemId: unit.itemId,
+            shieldGained: unit.stats.effectiveShield,
+            burnApplied: 0,
+            shockApplied: 0,
+            chillApplied: 0,
+            playerHp,
+            playerShield,
+            enemyHp,
+            enemyShield,
+            enemyBurn,
+            enemyShock: enemyBreak,
+            enemyChill: enemySuppress,
+          });
+        }
+
+        if (unit.stats.effectiveHeal > 0) {
+          const prevHp = playerHp;
+          playerHp = Math.min(playerMaxHp, playerHp + unit.stats.effectiveHeal);
+          const healed = playerHp - prevHp;
+          const overflow = unit.stats.effectiveHeal - healed;
+          const bonusShield = overflow > 0 ? Math.floor(overflow * 0.5) : 0;
+          if (bonusShield > 0) {
+            playerShield += bonusShield;
+            totalShieldGained += bonusShield;
+          }
+          unit.healing += healed;
+          unit.shield += bonusShield;
+          timeline.push({
+            time,
+            actor: 'player',
+            type: 'gadget_heal',
+            instanceId: unit.instanceId,
+            itemId: unit.itemId,
+            healed,
+            shieldGained: bonusShield,
+            burnApplied: 0,
+            shockApplied: 0,
+            chillApplied: 0,
+            playerHp,
+            playerShield,
+            enemyHp,
+            enemyShield,
+            enemyBurn,
+            enemyShock: enemyBreak,
+            enemyChill: enemySuppress,
+          });
+        }
       }
-      if (enemy.hp === 0) break;
     }
 
-    if (enemy.hp > 0 && enemyProgress + COOLDOWN_EPSILON >= enemyConfig.cooldownSec) {
-      enemyProgress = Math.max(0, enemyProgress - enemyConfig.cooldownSec);
-      absorbDamage(player, enemyConfig.attack);
-      record('enemy_attack', { damage: enemyConfig.attack });
+    if (enemyHp <= 0) break;
+
+    // 2. 燃烧每 1.0 秒跳伤
+    if (enemyBurn > 0) {
+      burnTickAccum += BATTLE_TICK_SEC;
+      if (burnTickAccum >= 1.0 - 1e-6) {
+        burnTickAccum -= 1.0;
+        const burnDmg = enemyBurn;
+        applyPlayerDamageToEnemy(burnDmg, false);
+        timeline.push({
+          time,
+          actor: 'status',
+          type: 'burn_tick',
+          damage: burnDmg,
+          burnApplied: 0,
+          shockApplied: 0,
+          chillApplied: 0,
+          playerHp,
+          playerShield,
+          enemyHp,
+          enemyShield,
+          enemyBurn,
+          enemyShock: enemyBreak,
+          enemyChill: enemySuppress,
+        });
+      }
     }
+
+    if (enemyHp <= 0) break;
+
+    // 3. 兽潮攻城节奏（受压制层数减速，最高减速 45%）
+    const suppressSlow = Math.min(0.45, enemySuppress * 0.12);
+    enemyAttackTimer -= BATTLE_TICK_SEC * (1 - suppressSlow);
+    if (enemyAttackTimer <= 1e-6) {
+      enemyAttackTimer += waveCfg.cooldownSec;
+      const eDmg = waveCfg.attack;
+      applyEnemyDamageToPlayer(eDmg);
+      timeline.push({
+        time,
+        actor: 'enemy',
+        type: 'enemy_attack',
+        damage: eDmg,
+        burnApplied: 0,
+        shockApplied: 0,
+        chillApplied: 0,
+        playerHp,
+        playerShield,
+        enemyHp,
+        enemyShield,
+        enemyBurn,
+        enemyShock: enemyBreak,
+        enemyChill: enemySuppress,
+      });
+    }
+
+    if (playerHp <= 0 || enemyHp <= 0) break;
+
+    // 4. 18 秒炮火过热 / 狂暴风暴加时机制
+    if (time >= OVERTIME_START_SEC) {
+      stormTickAccum += BATTLE_TICK_SEC;
+      if (stormTickAccum >= 1.0 - 1e-6) {
+        stormTickAccum -= 1.0;
+        const stormDmg = Math.round((time - OVERTIME_START_SEC + 1) * 4);
+        applyEnemyDamageToPlayer(stormDmg);
+        applyPlayerDamageToEnemy(stormDmg, false);
+        timeline.push({
+          time,
+          actor: 'storm',
+          type: 'overtime_storm',
+          damage: stormDmg,
+          burnApplied: 0,
+          shockApplied: 0,
+          chillApplied: 0,
+          playerHp,
+          playerShield,
+          enemyHp,
+          enemyShield,
+          enemyBurn,
+          enemyShock: enemyBreak,
+          enemyChill: enemySuppress,
+        });
+      }
+    }
+
+    if (playerHp <= 0 || enemyHp <= 0) break;
   }
 
-  const won = enemy.hp === 0 && player.hp > 0;
-  const { baseRewardGold } = enemyConfig;
-  const interestEarned = won && relics.has('compound_interest') ? Math.min(5, Math.floor(state.gold / 5)) : 0;
+  const won = enemyHp <= 0 && playerHp > 0;
+  const interestEarned = won && relics.has('wartime_bonds') ? Math.min(5, Math.floor(state.gold / 5)) : 0;
+  const goldEarned = won ? waveCfg.baseRewardGold + interestEarned : Math.max(2, Math.floor(waveCfg.baseRewardGold * 0.5));
+
+  const contributions = activeUnits.map((u) => ({
+    instanceId: u.instanceId,
+    itemId: u.itemId,
+    name: u.name,
+    level: u.level,
+    color: u.color,
+    damage: u.damage,
+    shield: u.shield,
+    healing: u.healing,
+  }));
+
   return {
-    wave: state.wave,
-    enemy: { ...enemyConfig },
+    wave: waveCfg.wave,
     won,
     durationSec: time,
     playerStartHp: state.playerMaxHp,
     playerStartShield,
-    playerEndHp: player.hp,
-    playerEndShield: player.shield,
-    enemyEndHp: enemy.hp,
-    enemyEndShield: enemy.shield,
-    goldEarned: won ? baseRewardGold : Math.max(4, Math.floor(baseRewardGold * 0.6)),
-    interestEarned,
+    playerEndHp: playerHp,
+    playerEndShield: playerShield,
+    enemy: {
+      name: waveCfg.name,
+      title: waveCfg.title,
+      isBoss: waveCfg.isBoss,
+      isAerial: waveCfg.isAerial,
+      maxHp: waveCfg.maxHp,
+      initialShield: waveCfg.initialShield,
+    },
+    enemyEndHp: enemyHp,
+    enemyEndShield: enemyShield,
     totalDamageDealt,
     totalShieldGained,
-    totalHealing,
-    contributions: equipment.map(({ contribution }) => contribution).sort((a, b) =>
-      (b.damage + b.shield + b.healing) - (a.damage + a.shield + a.healing)
-    ),
+    goldEarned,
+    interestEarned,
+    contributions,
     timeline,
   };
 }
 
-function prepareRound(state) {
-  state.phase = 'prep';
-  state.refreshCountThisWave = 0;
-  state.refreshCost = BASE_REFRESH_COST;
-  state.pendingRelicChoices = [];
-  refillShop(state);
-}
-
 export function runWaveBattle(state) {
-  const next = cloneForPrep(state);
-  const report = simulateBattle(next);
+  if (!isPrepPhase(state)) throw new Error('当前不在整备阶段');
+  const report = simulateBattle(state);
+  const next = cloneState(state);
   next.lastBattleReport = report;
-  next.gold += report.goldEarned + report.interestEarned;
+  next.gold += report.goldEarned;
 
-  if (!report.won) {
-    next.lives--;
-    if (next.lives <= 0) next.phase = 'gameover';
-    else prepareRound(next);
-  } else if (next.wave === MAX_WAVES) {
-    next.phase = 'victory';
-  } else if (RELIC_WAVE_MILESTONES.includes(next.wave)) {
-    selectRelicChoices(next);
-    next.phase = 'relic_draft';
+  if (report.won) {
+    if (next.wave >= MAX_WAVES) {
+      next.phase = 'victory';
+      return next;
+    }
+
+    if (RELIC_WAVE_MILESTONES.includes(next.wave)) {
+      const available = RELIC_IDS.filter((id) => !next.relics.includes(id));
+      let curRng = next.rngState;
+      const choices = [];
+      const pool = [...available];
+      while (choices.length < 3 && pool.length > 0) {
+        const step = nextRng(curRng);
+        curRng = step.rngState;
+        const idx = Math.floor(step.value * pool.length);
+        choices.push(pool.splice(idx, 1)[0]);
+      }
+      next.rngState = curRng;
+      next.pendingRelicChoices = choices;
+      next.phase = 'relic_draft';
+      return next;
+    }
+
+    next.wave += 1;
   } else {
-    next.wave++;
-    prepareRound(next);
+    next.lives = Math.max(0, next.lives - 1);
+    if (next.lives <= 0) {
+      next.phase = 'gameover';
+      return next;
+    }
   }
+
+  // 刷新下波商店（保留锁定槽位并推进 rngState）
+  next.refreshCountInWave = 0;
+  next.refreshCost = BASE_REFRESH_COST;
+  const rolled = rollShopOffers(next.rngState, next.shopOffers, true);
+  next.shopOffers = rolled.shopOffers;
+  next.rngState = rolled.rngState;
+  next.phase = 'prep';
   return next;
 }
 
 export function chooseRelic(state, relicId) {
-  if (state.phase !== 'relic_draft') throw new Error('当前没有可选遗物');
-  if (!state.pendingRelicChoices.includes(relicId)) throw new Error('该遗物不在本次候选中');
-  const next = structuredClone(state);
+  if (state.phase !== 'relic_draft') throw new Error('当前不在军令勋章抉择阶段');
+  if (!state.pendingRelicChoices.includes(relicId)) throw new Error('所选军令勋章不在候选中');
+
+  const next = cloneState(state);
   next.relics.push(relicId);
-  if (relicId === 'titanium_hull') next.playerMaxHp += 35;
-  next.wave++;
-  prepareRound(next);
+  next.pendingRelicChoices = [];
+
+  if (relicId === 'bastion_fortification') {
+    next.playerMaxHp += 40;
+  }
+
+  next.wave += 1;
+  next.refreshCountInWave = 0;
+  next.refreshCost = BASE_REFRESH_COST;
+  const rolled = rollShopOffers(next.rngState, next.shopOffers, true);
+  next.shopOffers = rolled.shopOffers;
+  next.rngState = rolled.rngState;
+  next.phase = 'prep';
   return next;
 }
